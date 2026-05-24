@@ -40,6 +40,16 @@ export function App() {
       .finally(() => setActiveTask(null));
   }, []);
 
+  useEffect(() => {
+    if (!selectedBook) return;
+
+    const timer = window.setTimeout(() => {
+      api.progress(selectedBook.id, pageIndex).catch(() => undefined);
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedBook, pageIndex]);
+
   async function scan(library: Library) {
     setStatus(`Scanning ${library.rootPath}`);
     setActiveTask("Scanning library");
@@ -81,7 +91,6 @@ export function App() {
       setReaderImageLoaded(false);
     }
     setPageIndex(clamped);
-    await api.progress(book.id, clamped).catch(() => undefined);
   }
 
   const filteredSeries = useMemo(() => {
