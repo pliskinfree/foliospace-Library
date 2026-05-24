@@ -125,6 +125,36 @@ button:hover {
   font-size: 13px;
 }
 
+.scanProgress {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid #d9e0e3;
+  background: #eef6f7;
+  padding: 10px 18px 12px;
+}
+
+.scanProgress small {
+  display: block;
+  color: #526269;
+  margin-top: 3px;
+}
+
+.scanMeter {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #cfdee2;
+}
+
+.scanMeter div {
+  width: 34%;
+  height: 100%;
+  border-radius: inherit;
+  background: #337f92;
+  animation: progressSlide 1.4s ease-in-out infinite;
+}
+
 .grid {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(280px, 1fr);

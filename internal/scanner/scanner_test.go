@@ -59,6 +59,17 @@ func TestScanLibraryIndexesValidArchivesAndRecordsEmptyFile(t *testing.T) {
 	if len(errors) != 1 || errors[0].Code != "empty_file" {
 		t.Fatalf("errors = %#v, want one empty_file", errors)
 	}
+
+	secondJob, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondJob.SkippedFiles != 2 {
+		t.Fatalf("second scan skipped files = %d, want 2", secondJob.SkippedFiles)
+	}
+	if secondJob.IndexedFiles != 0 {
+		t.Fatalf("second scan indexed files = %d, want 0", secondJob.IndexedFiles)
+	}
 }
 
 func makeZip(t *testing.T, path string, entries map[string]string) {

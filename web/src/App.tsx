@@ -19,8 +19,10 @@ export function App() {
   const [activeTask, setActiveTask] = useState<string | null>(null);
   const [readerImageLoaded, setReaderImageLoaded] = useState(false);
 
-  async function refreshAll() {
-    setActiveTask("Refreshing library");
+  async function refreshAll(showProgress = false) {
+    if (showProgress) {
+      setActiveTask("Refreshing library");
+    }
     const [nextLibraries, nextSeries, nextJobs, nextErrors] = await Promise.all([
       api.libraries(),
       api.series(),
@@ -31,14 +33,28 @@ export function App() {
     setSeries(nextSeries);
     setJobs(nextJobs);
     setErrors(nextErrors);
-    setActiveTask(null);
+    if (showProgress) {
+      setActiveTask(null);
+    }
   }
 
   useEffect(() => {
-    refreshAll()
+    refreshAll(true)
       .catch((error) => setStatus(error.message))
       .finally(() => setActiveTask(null));
   }, []);
+
+  const activeScan = jobs.find((job) => job.status === "running") ?? null;
+
+  useEffect(() => {
+    if (!activeScan) return;
+
+    const timer = window.setInterval(() => {
+      refreshAll().catch((error) => setStatus(error.message));
+    }, 1200);
+
+    return () => window.clearInterval(timer);
+  }, [activeScan?.id]);
 
   useEffect(() => {
     if (!selectedBook) return;
@@ -55,7 +71,7 @@ export function App() {
     setActiveTask("Scanning library");
     try {
       const job = await api.scan(library.id);
-      setStatus(`Scan ${job.status}: ${job.indexedFiles} indexed, ${job.errorCount} errors`);
+      setStatus(`Scan queued: job #${job.id}`);
       await refreshAll();
     } finally {
       setActiveTask(null);
@@ -99,6 +115,10 @@ export function App() {
     return series.filter((item) => item.title.toLowerCase().includes(value));
   }, [query, series]);
 
+  const scanProgressLabel = activeScan
+    ? `${activeScan.indexedFiles} indexed · ${activeScan.skippedFiles} skipped · ${activeScan.errorCount} errors`
+    : null;
+
   return (
     <main className="app">
       <aside className="sidebar">
@@ -127,8 +147,20 @@ export function App() {
 
         <header className="topbar">
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search series" />
-          <span>{status}</span>
+          <span>{activeScan ? `Scanning: ${scanProgressLabel}` : status}</span>
         </header>
+
+        {activeScan && (
+          <section className="scanProgress" role="status" aria-live="polite">
+            <div>
+              <strong>Scan job #{activeScan.id}</strong>
+              <small>{scanProgressLabel}</small>
+            </div>
+            <div className="scanMeter">
+              <div />
+            </div>
+          </section>
+        )}
 
         {view === "library" && (
           <div className="grid">
@@ -231,7 +263,8 @@ export function App() {
                 <div>
                   <strong>Job #{job.id}</strong>
                   <small>
-                    {job.status} · {job.indexedFiles}/{job.discoveredFiles} indexed · {job.errorCount} errors
+                    {job.status} · {job.discoveredFiles} discovered · {job.indexedFiles} indexed · {job.skippedFiles} skipped ·{" "}
+                    {job.errorCount} errors
                   </small>
                 </div>
               </div>

@@ -139,6 +139,27 @@ func (s *Store) UpsertFile(bookID int64, libraryID int64, absPath string, relPat
 	return scanFile(row)
 }
 
+type FileIndex struct {
+	File      domain.File
+	Analyzed  bool
+	PageCount int
+}
+
+func (s *Store) FileIndexByPath(absPath string) (FileIndex, error) {
+	row := s.db.QueryRow(`SELECT f.id, f.book_id, f.library_id, f.abs_path, f.rel_path, f.size, f.mtime, f.ext, b.analyzed, b.page_count
+		FROM files f JOIN books b ON b.id = f.book_id
+		WHERE f.abs_path = ?`, absPath)
+	var item FileIndex
+	var mtime string
+	var analyzed int
+	if err := row.Scan(&item.File.ID, &item.File.BookID, &item.File.LibraryID, &item.File.AbsPath, &item.File.RelPath, &item.File.Size, &mtime, &item.File.Ext, &analyzed, &item.PageCount); err != nil {
+		return item, err
+	}
+	item.File.MTime = parseTime(mtime)
+	item.Analyzed = analyzed != 0
+	return item, nil
+}
+
 func (s *Store) ReplacePages(bookID int64, pages []domain.Page) error {
 	tx, err := s.db.Begin()
 	if err != nil {

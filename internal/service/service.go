@@ -35,7 +35,7 @@ func (s *Service) ScanLibrary(id int64) (domain.ScanJob, error) {
 	if err != nil {
 		return domain.ScanJob{}, err
 	}
-	return s.scanner.ScanLibrary(lib)
+	return s.scanner.StartScanJob(lib)
 }
 
 func (s *Service) ListSeries() ([]domain.Series, error) {

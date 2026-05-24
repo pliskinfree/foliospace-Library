@@ -25,6 +25,21 @@ func (s *Scanner) ScanLibrary(library domain.Library) (domain.ScanJob, error) {
 	if err != nil {
 		return job, err
 	}
+	return s.RunScanJob(library, job)
+}
+
+func (s *Scanner) StartScanJob(library domain.Library) (domain.ScanJob, error) {
+	job, err := s.store.StartScanJob(library.ID)
+	if err != nil {
+		return job, err
+	}
+	go func() {
+		_, _ = s.RunScanJob(library, job)
+	}()
+	return job, nil
+}
+
+func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain.ScanJob, error) {
 	_ = s.store.AddJobEvent(job.ID, "info", "scan started")
 
 	walkErr := filepath.WalkDir(library.RootPath, func(path string, entry fs.DirEntry, walkErr error) error {
@@ -52,15 +67,23 @@ func (s *Scanner) ScanLibrary(library domain.Library) (domain.ScanJob, error) {
 		if info.Size() == 0 {
 			job.ErrorCount++
 			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorEmptyFile, "empty file")
+			_ = s.store.UpdateScanJob(job)
+			return nil
+		}
+		if s.canSkipUnchanged(path, info, ext) {
+			job.SkippedFiles++
+			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
 
 		if err := s.indexFile(library, job.ID, path, info, ext); err != nil {
 			job.ErrorCount++
 			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorArchiveOpenFailed, err.Error())
+			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
 		job.IndexedFiles++
+		_ = s.store.UpdateScanJob(job)
 		return nil
 	})
 	if walkErr != nil {
@@ -77,6 +100,18 @@ func (s *Scanner) ScanLibrary(library domain.Library) (domain.ScanJob, error) {
 	}
 	_ = s.store.AddJobEvent(job.ID, "info", "scan completed")
 	return job, nil
+}
+
+func (s *Scanner) canSkipUnchanged(path string, info fs.FileInfo, ext string) bool {
+	index, err := s.store.FileIndexByPath(path)
+	if err != nil {
+		return false
+	}
+	return index.File.Size == info.Size() &&
+		index.File.Ext == ext &&
+		index.File.MTime.Equal(info.ModTime()) &&
+		index.Analyzed &&
+		index.PageCount > 0
 }
 
 func (s *Scanner) indexFile(library domain.Library, jobID int64, path string, info fs.FileInfo, ext string) error {

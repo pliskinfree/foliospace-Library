@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"foliospace-reader/internal/db"
 	"foliospace-reader/internal/service"
@@ -34,6 +35,10 @@ func TestAPIIndexesAndStreamsCBZPages(t *testing.T) {
 	defer ts.Close()
 
 	post(t, ts.URL+"/api/libraries/"+itoa(lib.ID)+"/scan", "")
+	waitFor(t, func() bool {
+		jobs, err := st.ListScanJobs()
+		return err == nil && len(jobs) > 0 && jobs[0].Status == "completed"
+	})
 	body := get(t, ts.URL+"/api/series")
 	if !strings.Contains(body, "Series A") {
 		t.Fatalf("series response %q does not include Series A", body)
@@ -92,6 +97,17 @@ func post(t *testing.T, url string, body string) {
 		data, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST %s status %d: %s", url, resp.StatusCode, data)
 	}
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	for range 50 {
+		if condition() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("condition was not met")
 }
 
 func itoa(value int64) string {
