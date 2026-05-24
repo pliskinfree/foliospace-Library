@@ -211,18 +211,18 @@ func (s *Store) StartScanJob(libraryID int64) (domain.ScanJob, error) {
 }
 
 func (s *Store) UpdateScanJob(job domain.ScanJob) error {
-	_, err := s.db.Exec(`UPDATE scan_jobs SET status = ?, discovered_files = ?, indexed_files = ?, skipped_files = ?, error_count = ?, finished_at = ? WHERE id = ?`,
-		job.Status, job.DiscoveredFiles, job.IndexedFiles, job.SkippedFiles, job.ErrorCount, formatOptionalTime(job.FinishedAt), job.ID)
+	_, err := s.db.Exec(`UPDATE scan_jobs SET status = ?, current_path = ?, discovered_files = ?, indexed_files = ?, skipped_files = ?, error_count = ?, finished_at = ? WHERE id = ?`,
+		job.Status, job.CurrentPath, job.DiscoveredFiles, job.IndexedFiles, job.SkippedFiles, job.ErrorCount, formatOptionalTime(job.FinishedAt), job.ID)
 	return err
 }
 
 func (s *Store) ScanJobByID(id int64) (domain.ScanJob, error) {
-	row := s.db.QueryRow(`SELECT id, library_id, status, discovered_files, indexed_files, skipped_files, error_count, started_at, finished_at FROM scan_jobs WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, library_id, status, current_path, discovered_files, indexed_files, skipped_files, error_count, started_at, finished_at FROM scan_jobs WHERE id = ?`, id)
 	return scanJob(row)
 }
 
 func (s *Store) ListScanJobs() ([]domain.ScanJob, error) {
-	rows, err := s.db.Query(`SELECT id, library_id, status, discovered_files, indexed_files, skipped_files, error_count, started_at, finished_at FROM scan_jobs ORDER BY id DESC LIMIT 50`)
+	rows, err := s.db.Query(`SELECT id, library_id, status, current_path, discovered_files, indexed_files, skipped_files, error_count, started_at, finished_at FROM scan_jobs ORDER BY id DESC LIMIT 50`)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +289,18 @@ func (s *Store) RecordFileError(input domain.FileErrorInput) error {
 }
 
 func (s *Store) ListFileErrors() ([]domain.FileError, error) {
-	rows, err := s.db.Query(`SELECT id, library_id, book_id, file_id, job_id, path, code, message, first_seen, last_seen FROM file_errors ORDER BY last_seen DESC, id DESC`)
+	return s.ListFileErrorsByJob(0)
+}
+
+func (s *Store) ListFileErrorsByJob(jobID int64) ([]domain.FileError, error) {
+	query := `SELECT id, library_id, book_id, file_id, job_id, path, code, message, first_seen, last_seen FROM file_errors`
+	args := []any{}
+	if jobID > 0 {
+		query += ` WHERE job_id = ?`
+		args = append(args, jobID)
+	}
+	query += ` ORDER BY last_seen DESC, id DESC`
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +371,7 @@ func scanJob(row scanner) (domain.ScanJob, error) {
 	var job domain.ScanJob
 	var started string
 	var finished string
-	if err := row.Scan(&job.ID, &job.LibraryID, &job.Status, &job.DiscoveredFiles, &job.IndexedFiles, &job.SkippedFiles, &job.ErrorCount, &started, &finished); err != nil {
+	if err := row.Scan(&job.ID, &job.LibraryID, &job.Status, &job.CurrentPath, &job.DiscoveredFiles, &job.IndexedFiles, &job.SkippedFiles, &job.ErrorCount, &started, &finished); err != nil {
 		return job, err
 	}
 	job.StartedAt = parseTime(started)

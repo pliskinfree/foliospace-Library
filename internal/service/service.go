@@ -110,6 +110,10 @@ func (s *Service) ListErrors() ([]domain.FileError, error) {
 	return s.store.ListFileErrors()
 }
 
+func (s *Service) ListErrorsByJob(jobID int64) ([]domain.FileError, error) {
+	return s.store.ListFileErrorsByJob(jobID)
+}
+
 type PageStream struct {
 	Body        io.ReadCloser
 	ContentType string

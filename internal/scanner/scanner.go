@@ -41,11 +41,15 @@ func (s *Scanner) StartScanJob(library domain.Library) (domain.ScanJob, error) {
 
 func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain.ScanJob, error) {
 	_ = s.store.AddJobEvent(job.ID, "info", "scan started")
+	_ = s.store.AddJobEvent(job.ID, "info", "walking "+library.RootPath)
 
 	walkErr := filepath.WalkDir(library.RootPath, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			job.CurrentPath = path
 			job.ErrorCount++
 			_ = s.recordPathError(library.ID, job.ID, path, classifyWalkError(walkErr), walkErr.Error())
+			_ = s.store.AddJobEvent(job.ID, "error", "walk failed: "+path)
+			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
 		if entry.IsDir() {
@@ -56,22 +60,27 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 		if ext != ".cbz" && ext != ".zip" {
 			return nil
 		}
+		job.CurrentPath = path
 		job.DiscoveredFiles++
 
 		info, err := entry.Info()
 		if err != nil {
 			job.ErrorCount++
 			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
+			_ = s.store.AddJobEvent(job.ID, "error", "stat failed: "+path)
+			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
 		if info.Size() == 0 {
 			job.ErrorCount++
 			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorEmptyFile, "empty file")
+			_ = s.store.AddJobEvent(job.ID, "error", "empty file: "+path)
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
 		if s.canSkipUnchanged(path, info, ext) {
 			job.SkippedFiles++
+			_ = s.store.AddJobEvent(job.ID, "debug", "skipped unchanged: "+path)
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
@@ -79,21 +88,26 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 		if err := s.indexFile(library, job.ID, path, info, ext); err != nil {
 			job.ErrorCount++
 			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorArchiveOpenFailed, err.Error())
+			_ = s.store.AddJobEvent(job.ID, "error", "archive failed: "+path)
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
 		job.IndexedFiles++
+		_ = s.store.AddJobEvent(job.ID, "info", "indexed: "+path)
 		_ = s.store.UpdateScanJob(job)
 		return nil
 	})
 	if walkErr != nil {
 		job.Status = "failed"
+		job.CurrentPath = ""
 		job.FinishedAt = time.Now()
 		_ = s.store.UpdateScanJob(job)
+		_ = s.store.AddJobEvent(job.ID, "error", "scan failed: "+walkErr.Error())
 		return job, walkErr
 	}
 
 	job.Status = "completed"
+	job.CurrentPath = ""
 	job.FinishedAt = time.Now()
 	if err := s.store.UpdateScanJob(job); err != nil {
 		return job, err

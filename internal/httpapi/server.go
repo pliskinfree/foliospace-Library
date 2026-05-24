@@ -184,7 +184,22 @@ func (s *Server) handleErrors(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	items, err := s.service.ListErrors()
+	var jobID int64
+	if value := r.URL.Query().Get("jobId"); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		jobID = parsed
+	}
+	var items any
+	var err error
+	if jobID > 0 {
+		items, err = s.service.ListErrorsByJob(jobID)
+	} else {
+		items, err = s.service.ListErrors()
+	}
 	writeJSONOrError(w, items, err)
 }
 

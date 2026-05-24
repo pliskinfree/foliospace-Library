@@ -308,6 +308,100 @@ h1 {
   display: grid;
 }
 
+.jobLayout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 16px;
+  padding: 16px;
+}
+
+.jobRow {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  text-align: left;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  padding: 10px 0;
+}
+
+.jobRow span {
+  overflow: hidden;
+  color: #69777d;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jobDetail {
+  display: grid;
+  gap: 14px;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.statGrid span {
+  display: grid;
+  gap: 2px;
+  border: 1px solid #d9e0e3;
+  border-radius: 6px;
+  padding: 8px;
+  color: #647177;
+  font-size: 12px;
+}
+
+.statGrid strong {
+  color: #1e2528;
+  font-size: 16px;
+}
+
+.currentPath {
+  display: block;
+  overflow-wrap: anywhere;
+  border: 1px solid #d9e0e3;
+  border-radius: 6px;
+  background: #f7fafb;
+  padding: 8px;
+}
+
+.jobDetail h2 {
+  font-size: 14px;
+  margin: 4px 0 0;
+}
+
+.eventList {
+  display: grid;
+  border-top: 1px solid #eef2f3;
+}
+
+.event {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px;
+  border-bottom: 1px solid #eef2f3;
+  padding: 7px 0;
+}
+
+.event code {
+  color: #47626b;
+}
+
+.event.error code {
+  color: #9b2c2c;
+}
+
+.event.debug {
+  color: #69777d;
+}
+
+.compact .errorRow {
+  grid-template-columns: 150px 1fr;
+}
+
 .errorRow {
   grid-template-columns: 170px 1fr minmax(180px, 0.5fr);
   align-items: start;
@@ -340,6 +434,10 @@ h1 {
   }
 
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .jobLayout {
     grid-template-columns: 1fr;
   }
 

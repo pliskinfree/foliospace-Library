@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, Book, FileError, Library, Page, ScanJob, Series } from "./api";
+import { api, Book, FileError, JobEvent, Library, Page, ScanJob, Series } from "./api";
 
 type View = "library" | "reader" | "jobs" | "errors";
 
@@ -10,6 +10,9 @@ export function App() {
   const [books, setBooks] = useState<Book[]>([]);
   const [jobs, setJobs] = useState<ScanJob[]>([]);
   const [errors, setErrors] = useState<FileError[]>([]);
+  const [jobEvents, setJobEvents] = useState<JobEvent[]>([]);
+  const [jobErrors, setJobErrors] = useState<FileError[]>([]);
+  const [selectedJob, setSelectedJob] = useState<ScanJob | null>(null);
   const [selectedSeries, setSelectedSeries] = useState<Series | null>(null);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
@@ -78,6 +81,18 @@ export function App() {
     }
   }
 
+  async function openJob(job: ScanJob) {
+    setActiveTask(`Loading job #${job.id}`);
+    setSelectedJob(job);
+    try {
+      const [events, scopedErrors] = await Promise.all([api.jobEvents(job.id), api.jobErrors(job.id)]);
+      setJobEvents(events);
+      setJobErrors(scopedErrors);
+    } finally {
+      setActiveTask(null);
+    }
+  }
+
   async function openSeries(item: Series) {
     setActiveTask(`Loading ${item.title}`);
     setSelectedSeries(item);
@@ -118,6 +133,7 @@ export function App() {
   const scanProgressLabel = activeScan
     ? `${activeScan.indexedFiles} indexed · ${activeScan.skippedFiles} skipped · ${activeScan.errorCount} errors`
     : null;
+  const selectedJobLatest = selectedJob ? jobs.find((job) => job.id === selectedJob.id) ?? selectedJob : null;
 
   return (
     <main className="app">
@@ -256,20 +272,59 @@ export function App() {
         )}
 
         {view === "jobs" && (
-          <section className="panel">
-            <h1>Jobs</h1>
-            {jobs.map((job) => (
-              <div className="row" key={job.id}>
-                <div>
+          <div className="jobLayout">
+            <section className="panel">
+              <h1>Jobs</h1>
+              {jobs.map((job) => (
+                <button className="jobRow" key={job.id} onClick={() => openJob(job)}>
                   <strong>Job #{job.id}</strong>
                   <small>
                     {job.status} · {job.discoveredFiles} discovered · {job.indexedFiles} indexed · {job.skippedFiles} skipped ·{" "}
                     {job.errorCount} errors
                   </small>
+                  {job.currentPath && <span>{job.currentPath}</span>}
+                </button>
+              ))}
+            </section>
+
+            <section className="panel">
+              <h1>{selectedJobLatest ? `Job #${selectedJobLatest.id}` : "Job Detail"}</h1>
+              {selectedJobLatest ? (
+                <div className="jobDetail">
+                  <div className="statGrid">
+                    <span>Status<strong>{selectedJobLatest.status}</strong></span>
+                    <span>Discovered<strong>{selectedJobLatest.discoveredFiles}</strong></span>
+                    <span>Indexed<strong>{selectedJobLatest.indexedFiles}</strong></span>
+                    <span>Skipped<strong>{selectedJobLatest.skippedFiles}</strong></span>
+                    <span>Errors<strong>{selectedJobLatest.errorCount}</strong></span>
+                    <span>Elapsed<strong>{formatElapsed(selectedJobLatest)}</strong></span>
+                  </div>
+                  {selectedJobLatest.currentPath && <code className="currentPath">{selectedJobLatest.currentPath}</code>}
+                  <h2>Events</h2>
+                  <div className="eventList">
+                    {jobEvents.map((event) => (
+                      <div className={`event ${event.level}`} key={event.id}>
+                        <code>{event.level}</code>
+                        <span>{event.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <h2>Errors</h2>
+                  <div className="table compact">
+                    {jobErrors.map((item) => (
+                      <div className="errorRow" key={item.id}>
+                        <code>{item.code}</code>
+                        <span>{item.path}</span>
+                        <small>{item.message}</small>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </section>
+              ) : (
+                <div className="empty">Select a job to inspect events and errors.</div>
+              )}
+            </section>
+          </div>
         )}
 
         {view === "errors" && (
@@ -289,4 +344,11 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function formatElapsed(job: ScanJob) {
+  const started = new Date(job.startedAt).getTime();
+  const finished = job.finishedAt ? new Date(job.finishedAt).getTime() : Date.now();
+  if (!Number.isFinite(started) || !Number.isFinite(finished)) return "-";
+  return `${Math.max(0, Math.round((finished - started) / 1000))}s`;
 }

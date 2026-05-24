@@ -31,6 +31,7 @@ export type ScanJob = {
   id: number;
   libraryId: number;
   status: string;
+  currentPath: string;
   discoveredFiles: number;
   indexedFiles: number;
   skippedFiles: number;
@@ -45,6 +46,14 @@ export type FileError = {
   code: string;
   message: string;
   lastSeen: string;
+};
+
+export type JobEvent = {
+  id: number;
+  jobId: number;
+  level: string;
+  message: string;
+  createdAt: string;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -66,7 +75,9 @@ export const api = {
   books: (seriesId: number) => request<Book[]>(`/api/series/${seriesId}/books`),
   pages: (bookId: number) => request<Page[]>(`/api/books/${bookId}/pages`),
   jobs: () => request<ScanJob[]>("/api/jobs"),
+  jobEvents: (jobId: number) => request<JobEvent[]>(`/api/jobs/${jobId}/events`),
   errors: () => request<FileError[]>("/api/errors"),
+  jobErrors: (jobId: number) => request<FileError[]>(`/api/errors?jobId=${jobId}`),
   progress: (bookId: number, pageIndex: number) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/progress`, {
       method: "PUT",

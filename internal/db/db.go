@@ -84,6 +84,7 @@ func Migrate(conn *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
 			status TEXT NOT NULL,
+			current_path TEXT NOT NULL DEFAULT '',
 			discovered_files INTEGER NOT NULL DEFAULT 0,
 			indexed_files INTEGER NOT NULL DEFAULT 0,
 			skipped_files INTEGER NOT NULL DEFAULT 0,
@@ -123,5 +124,36 @@ func Migrate(conn *sql.DB) error {
 			return fmt.Errorf("migrate sqlite: %w", err)
 		}
 	}
+	if err := addColumnIfMissing(conn, "scan_jobs", "current_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
 	return nil
+}
+
+func addColumnIfMissing(conn *sql.DB, table string, column string, definition string) error {
+	rows, err := conn.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = conn.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, definition))
+	return err
 }

@@ -64,6 +64,7 @@ type ScanJob struct {
 	ID              int64     `json:"id"`
 	LibraryID       int64     `json:"libraryId"`
 	Status          string    `json:"status"`
+	CurrentPath     string    `json:"currentPath"`
 	DiscoveredFiles int       `json:"discoveredFiles"`
 	IndexedFiles    int       `json:"indexedFiles"`
 	SkippedFiles    int       `json:"skippedFiles"`
