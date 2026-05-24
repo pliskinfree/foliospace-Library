@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent } from "react";
-import { api, Book, FileError, JobEvent, Library, Page, ScanJob, Series } from "./api";
+import type { FormEvent, MouseEvent, TouchEvent } from "react";
+import { api, Book, EpubManifest, FileError, JobEvent, Library, Page, ScanJob, Series } from "./api";
 
 type View = "library" | "reader" | "jobs" | "errors";
+type ReaderPageMode = "single" | "double";
+type EpubTheme = "light" | "sepia" | "dark";
 
 export function App() {
   const [view, setView] = useState<View>("library");
@@ -17,6 +19,7 @@ export function App() {
   const [selectedSeries, setSelectedSeries] = useState<Series | null>(null);
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
+  const [epubManifest, setEpubManifest] = useState<EpubManifest | null>(null);
   const [pageIndex, setPageIndex] = useState(0);
   const [displayedPageIndex, setDisplayedPageIndex] = useState(0);
   const [query, setQuery] = useState("");
@@ -24,9 +27,20 @@ export function App() {
   const [activeTask, setActiveTask] = useState<string | null>(null);
   const [readerLoadState, setReaderLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [readerRetryKey, setReaderRetryKey] = useState(0);
+  const [readerPageMode, setReaderPageMode] = useState<ReaderPageMode>("single");
+  const [readerFullscreen, setReaderFullscreen] = useState(false);
+  const [epubPageMode, setEpubPageMode] = useState<ReaderPageMode>("single");
+  const [epubFontSize, setEpubFontSize] = useState(18);
+  const [epubTheme, setEpubTheme] = useState<EpubTheme>("light");
+  const [epubPagePosition, setEpubPagePosition] = useState(0);
+  const [epubPageCount, setEpubPageCount] = useState(1);
+  const [epubTocOpen, setEpubTocOpen] = useState(false);
   const [newLibraryName, setNewLibraryName] = useState("");
   const [newLibraryPath, setNewLibraryPath] = useState("");
   const imageCache = useRef<Set<string>>(new Set());
+  const readerRef = useRef<HTMLElement | null>(null);
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
+  const epubRestorePosition = useRef<number | null>(null);
 
   async function refreshAll(showProgress = false) {
     if (showProgress) {
@@ -67,6 +81,7 @@ export function App() {
 
   useEffect(() => {
     if (!selectedBook) return;
+    if (selectedBook.format === "epub") return;
 
     const timer = window.setTimeout(() => {
       api.progress(selectedBook.id, pageIndex).catch(() => undefined);
@@ -74,6 +89,23 @@ export function App() {
 
     return () => window.clearTimeout(timer);
   }, [selectedBook, pageIndex]);
+
+  useEffect(() => {
+    if (!selectedBook || selectedBook.format !== "epub") return;
+
+    const timer = window.setTimeout(() => {
+      api
+        .progressDetail(
+          selectedBook.id,
+          pageIndex,
+          String(epubPagePosition),
+          epubPageCount > 1 ? epubPagePosition / (epubPageCount - 1) : 0,
+        )
+        .catch(() => undefined);
+    }, 450);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedBook, pageIndex, epubPagePosition, epubPageCount]);
 
   async function scan(library: Library) {
     setStatus(`Scanning ${library.rootPath}`);
@@ -145,12 +177,26 @@ export function App() {
 
   async function openBook(book: Book) {
     setActiveTask(`Opening ${book.title}`);
-    setSelectedBook(book);
+    setEpubManifest(null);
     setPageIndex(0);
     setDisplayedPageIndex(0);
+    setEpubPagePosition(0);
+    setEpubPageCount(1);
+    setEpubTocOpen(false);
     setReaderLoadState("loading");
     try {
-      setPages(await api.pages(book.id));
+      const nextPages = await api.pages(book.id);
+      setPages(nextPages);
+      if (book.format === "epub") {
+        const [manifest, progress] = await Promise.all([api.epubManifest(book.id), api.readProgress(book.id)]);
+        const restoredPosition = readEpubLocator(progress.locator);
+        epubRestorePosition.current = restoredPosition;
+        setEpubManifest(manifest);
+        setPageIndex(Math.max(0, Math.min(progress.pageIndex, Math.max(0, nextPages.length - 1))));
+        setEpubPagePosition(restoredPosition);
+        setReaderLoadState("ready");
+      }
+      setSelectedBook(book);
       setView("reader");
     } finally {
       setActiveTask(null);
@@ -159,6 +205,10 @@ export function App() {
 
   async function setReaderPage(book: Book, nextIndex: number) {
     const clamped = Math.max(0, Math.min(nextIndex, Math.max(0, pages.length - 1)));
+    if (book.format === "epub") {
+      setEpubPagePosition(0);
+      setEpubPageCount(1);
+    }
     if (clamped !== pageIndex) {
       setReaderLoadState("loading");
     }
@@ -166,18 +216,18 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!selectedBook || pages.length === 0) return;
+    if (!selectedBook || pages.length === 0 || selectedBook.format === "epub") return;
 
     let cancelled = false;
     const targetIndex = pageIndex;
     setReaderLoadState("loading");
 
-    preloadPage(selectedBook.id, targetIndex)
+    preloadVisiblePages(selectedBook.id, targetIndex, pages.length, readerPageMode)
       .then(() => {
         if (cancelled) return;
         setDisplayedPageIndex(targetIndex);
         setReaderLoadState("ready");
-        prefetchNeighborPages(selectedBook.id, targetIndex, pages.length);
+        prefetchNeighborPages(selectedBook.id, targetIndex, pages.length, readerPageMode);
       })
       .catch(() => {
         if (cancelled) return;
@@ -188,7 +238,60 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedBook?.id, pageIndex, pages.length, readerRetryKey]);
+  }, [selectedBook?.id, pageIndex, pages.length, readerRetryKey, readerPageMode]);
+
+  useEffect(() => {
+    function onFullscreenChange() {
+      setReaderFullscreen(document.fullscreenElement === readerRef.current);
+    }
+
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  useEffect(() => {
+    if (view !== "reader" || !selectedBook) return;
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        goReaderPrevious();
+      }
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        goReaderNext();
+      }
+      if (event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        toggleReaderFullscreen();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [view, selectedBook, pageIndex, pages.length, readerPageMode, epubPagePosition, epubPageCount]);
+
+  useEffect(() => {
+    if (view !== "reader" || !selectedBook) return;
+
+    function onMouseUp(event: globalThis.MouseEvent) {
+      finishReaderSwipe(event.clientX, event.clientY);
+    }
+
+    function onTouchEnd(event: globalThis.TouchEvent) {
+      const touch = event.changedTouches[0];
+      if (touch) {
+        finishReaderSwipe(touch.clientX, touch.clientY);
+      }
+    }
+
+    window.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("touchend", onTouchEnd);
+    return () => {
+      window.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, [view, selectedBook, pageIndex, pages.length, readerPageMode, epubPagePosition, epubPageCount]);
 
   function preloadPage(bookID: number, index: number) {
     const src = `/api/books/${bookID}/pages/${index}`;
@@ -212,11 +315,104 @@ export function App() {
     });
   }
 
-  function prefetchNeighborPages(bookID: number, index: number, total: number) {
-    for (const next of [index + 1, index - 1]) {
+  function preloadVisiblePages(bookID: number, index: number, total: number, mode: ReaderPageMode) {
+    const visible = visiblePageIndexes(index, total, mode);
+    return Promise.all(visible.map((next) => preloadPage(bookID, next)));
+  }
+
+  function prefetchNeighborPages(bookID: number, index: number, total: number, mode: ReaderPageMode) {
+    const step = mode === "double" ? 2 : 1;
+    for (const next of [index + step, index - step]) {
       if (next >= 0 && next < total) {
-        preloadPage(bookID, next).catch(() => undefined);
+        preloadVisiblePages(bookID, next, total, mode).catch(() => undefined);
       }
+    }
+  }
+
+  function visiblePageIndexes(index: number, total: number, mode: ReaderPageMode) {
+    if (total <= 0) return [];
+    if (mode === "single") return [index];
+    return [index, index + 1].filter((next) => next >= 0 && next < total);
+  }
+
+  function readerStep() {
+    if (selectedBook?.format === "epub") return 1;
+    return readerPageMode === "double" ? 2 : 1;
+  }
+
+  function goReaderPrevious() {
+    if (!selectedBook) return;
+    if (selectedBook.format === "epub") {
+      if (epubPagePosition > 0) {
+        setEpubPagePosition((value) => Math.max(0, value - 1));
+        return;
+      }
+      setReaderPage(selectedBook, pageIndex - 1);
+      return;
+    }
+    setReaderPage(selectedBook, pageIndex - readerStep());
+  }
+
+  function goReaderNext() {
+    if (!selectedBook) return;
+    if (selectedBook.format === "epub") {
+      if (epubPagePosition < epubPageCount - 1) {
+        setEpubPagePosition((value) => Math.min(epubPageCount - 1, value + 1));
+        return;
+      }
+      setReaderPage(selectedBook, pageIndex + 1);
+      return;
+    }
+    setReaderPage(selectedBook, pageIndex + readerStep());
+  }
+
+  function jumpToEpubChapter(index: number) {
+    if (!selectedBook) return;
+    setEpubTocOpen(false);
+    setReaderPage(selectedBook, index);
+  }
+
+  async function toggleReaderFullscreen() {
+    if (!readerRef.current) return;
+    try {
+      if (document.fullscreenElement === readerRef.current) {
+        await document.exitFullscreen();
+        return;
+      }
+      await readerRef.current.requestFullscreen();
+    } catch (error) {
+      setStatus(error instanceof Error ? `Fullscreen unavailable: ${error.message}` : "Fullscreen unavailable");
+    }
+  }
+
+  function startReaderSwipe(x: number, y: number) {
+    swipeStart.current = { x, y };
+  }
+
+  function finishReaderSwipe(x: number, y: number) {
+    const start = swipeStart.current;
+    swipeStart.current = null;
+    if (!start) return;
+
+    const deltaX = x - start.x;
+    const deltaY = y - start.y;
+    if (Math.abs(deltaX) < 48 || Math.abs(deltaX) < Math.abs(deltaY) * 1.2) return;
+
+    if (deltaX < 0) {
+      goReaderNext();
+    } else {
+      goReaderPrevious();
+    }
+  }
+
+  function handleReaderMouseDown(event: MouseEvent<HTMLDivElement>) {
+    startReaderSwipe(event.clientX, event.clientY);
+  }
+
+  function handleReaderTouchStart(event: TouchEvent<HTMLDivElement>) {
+    const touch = event.changedTouches[0];
+    if (touch) {
+      startReaderSwipe(touch.clientX, touch.clientY);
     }
   }
 
@@ -264,7 +460,7 @@ export function App() {
         )}
 
         <header className="topbar">
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search series" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search collections" />
           <span>{activeScan ? `Scanning: ${scanProgressLabel}` : status}</span>
         </header>
 
@@ -312,12 +508,14 @@ export function App() {
             </section>
 
             <section className="panel">
-              <h1>Series</h1>
+              <h1>Collections</h1>
               <div className="list">
                 {filteredSeries.map((item) => (
                   <button className="listItem" key={item.id} onClick={() => openSeries(item)}>
                     <span>{item.title}</span>
-                    <small>{item.bookCount} books</small>
+                    <small>
+                      {item.directoryPath || "."} · {item.bookCount} volumes
+                    </small>
                   </button>
                 ))}
               </div>
@@ -326,11 +524,11 @@ export function App() {
             <section className="coverWall panel wide">
               <div className="coverWallHeader">
                 <div>
-                  <h1>{selectedSeries ? selectedSeries.title : "Cover Wall"}</h1>
+                  <h1>{selectedSeries ? selectedSeries.title : "Volume Wall"}</h1>
                   <small>
                     {selectedSeries
-                      ? `${filteredBooks.length} of ${books.length} books`
-                      : "Select a series to browse its books"}
+                      ? `${filteredBooks.length} of ${books.length} volumes`
+                      : "Select a collection to browse its single volumes"}
                   </small>
                 </div>
                 {selectedSeries && <span>{selectedSeries.bookCount} indexed</span>}
@@ -344,14 +542,18 @@ export function App() {
                         <span className="coverBadge">{book.format.toUpperCase()}</span>
                       </span>
                       <strong>{book.title}</strong>
-                      <small>{book.pageCount ? `${book.pageCount} pages` : "Not analyzed"}</small>
+                      <small>
+                        Single volume · {book.pageCount ? `${book.pageCount} pages` : "Not analyzed"}
+                      </small>
                     </button>
                   ))}
                 </div>
               ) : (
                 <div className="coverEmpty">
-                  <strong>{selectedSeries ? "No matching books" : "No series selected"}</strong>
-                  <small>{selectedSeries ? "Clear the search field to show all books." : "Choose a series from the list above."}</small>
+                  <strong>{selectedSeries ? "No matching volumes" : "No collection selected"}</strong>
+                  <small>
+                    {selectedSeries ? "Clear the search field to show all volumes." : "Choose a collection from the list above."}
+                  </small>
                 </div>
               )}
             </section>
@@ -359,17 +561,88 @@ export function App() {
         )}
 
         {view === "reader" && (
-          <section className="reader">
+          <section className="reader" ref={readerRef}>
             {selectedBook ? (
               <>
                 <div className="readerHeader">
-                  <strong>{selectedBook.title}</strong>
-                  <span>
-                    {pageIndex + 1} / {Math.max(pages.length, 1)}
-                  </span>
+                  <div className="readerTitle">
+                    <strong>{selectedBook.title}</strong>
+                    <span>
+                      {selectedBook.format === "epub" ? "Chapter " : ""}
+                      {pageIndex + 1}
+                      {selectedBook.format !== "epub" && readerPageMode === "double" && pageIndex + 1 < pages.length
+                        ? `-${pageIndex + 2}`
+                        : ""} /{" "}
+                      {Math.max(pages.length, 1)}
+                    </span>
+                  </div>
+                  <div className="readerToolbar" aria-label="Reader options">
+                    {selectedBook.format === "epub" ? (
+                      <>
+                        <button onClick={() => setEpubTocOpen((value) => !value)}>Contents</button>
+                        <div className="segmentedControl" role="group" aria-label="EPUB page mode">
+                          <button
+                            className={epubPageMode === "single" ? "selected" : ""}
+                            onClick={() => {
+                              setEpubPageMode("single");
+                              setEpubPagePosition(0);
+                            }}
+                          >
+                            Single
+                          </button>
+                          <button
+                            className={epubPageMode === "double" ? "selected" : ""}
+                            onClick={() => {
+                              setEpubPageMode("double");
+                              setEpubPagePosition(0);
+                            }}
+                          >
+                            Double
+                          </button>
+                        </div>
+                        <select value={epubTheme} onChange={(event) => setEpubTheme(event.target.value as EpubTheme)}>
+                          <option value="light">Light</option>
+                          <option value="sepia">Sepia</option>
+                          <option value="dark">Dark</option>
+                        </select>
+                        <label className="fontControl">
+                          <span>Text</span>
+                          <input
+                            type="range"
+                            min="14"
+                            max="26"
+                            value={epubFontSize}
+                            onChange={(event) => setEpubFontSize(Number(event.target.value))}
+                          />
+                        </label>
+                      </>
+                    ) : (
+                      <div className="segmentedControl" role="group" aria-label="Page mode">
+                        <button
+                          className={readerPageMode === "single" ? "selected" : ""}
+                          onClick={() => setReaderPageMode("single")}
+                        >
+                          Single
+                        </button>
+                        <button
+                          className={readerPageMode === "double" ? "selected" : ""}
+                          onClick={() => setReaderPageMode("double")}
+                        >
+                          Double
+                        </button>
+                      </div>
+                    )}
+                    <button onClick={toggleReaderFullscreen}>{readerFullscreen ? "Exit Fullscreen" : "Fullscreen"}</button>
+                  </div>
                 </div>
-                <div className="pageStage">
-                  {readerLoadState === "loading" && pageIndex !== displayedPageIndex && (
+                <div
+                  className={`pageStage ${selectedBook.format === "epub" ? "epub" : readerPageMode}`}
+                  onMouseDownCapture={handleReaderMouseDown}
+                  onTouchStartCapture={handleReaderTouchStart}
+                >
+                  <button className="pageEdge previous" aria-label="Previous page" onClick={goReaderPrevious} />
+                  <button className="pageEdge next" aria-label="Next page" onClick={goReaderNext} />
+                  {readerLoadState === "loading" && selectedBook.format !== "epub" && pageIndex !== displayedPageIndex && (
                     <div className="pageLoading floating" role="status" aria-live="polite">
                       <div className="pageProgress"><div /></div>
                       <span>Loading page {pageIndex + 1}</span>
@@ -381,14 +654,71 @@ export function App() {
                       <button onClick={() => setReaderRetryKey((value) => value + 1)}>Retry</button>
                     </div>
                   )}
-                  <img
-                    key={`${selectedBook.id}-${displayedPageIndex}`}
-                    src={`/api/books/${selectedBook.id}/pages/${displayedPageIndex}`}
-                    alt={pages[displayedPageIndex]?.name ?? ""}
-                  />
+                  {selectedBook.format === "epub" ? (
+                    <>
+                      {epubTocOpen && epubManifest && (
+                        <div className="epubToc">
+                          {((epubManifest.toc?.length ?? 0) > 0
+                            ? epubManifest.toc
+                            : epubManifest.spine.map((item) => ({
+                                label: `Chapter ${item.index + 1}`,
+                                href: item.href,
+                                index: item.index,
+                              }))
+                          ).map((item) => (
+                            <button
+                              className={item.index === pageIndex ? "active" : ""}
+                              key={`${item.index}-${item.href}`}
+                              onClick={() => jumpToEpubChapter(item.index)}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <EpubFrame
+                        book={selectedBook}
+                        manifest={epubManifest}
+                        pageIndex={pageIndex}
+                        pageMode={epubPageMode}
+                        fontSize={epubFontSize}
+                        theme={epubTheme}
+                        pagePosition={epubPagePosition}
+                        onMetrics={(count, position) => {
+                          const restoredPosition = epubRestorePosition.current;
+                          if (restoredPosition !== null) {
+                            if (count > restoredPosition) {
+                              epubRestorePosition.current = null;
+                            }
+                            setEpubPageCount(Math.max(count, restoredPosition + 1));
+                            setEpubPagePosition(Math.max(0, restoredPosition));
+                            return;
+                          }
+                          setEpubPageCount(count);
+                          setEpubPagePosition(position);
+                        }}
+                      />
+                    </>
+                  ) : (
+                    <div className="pageSpread" aria-live="polite">
+                      {visiblePageIndexes(displayedPageIndex, pages.length, readerPageMode).map((visibleIndex) => (
+                        <img
+                          key={`${selectedBook.id}-${visibleIndex}`}
+                          src={`/api/books/${selectedBook.id}/pages/${visibleIndex}`}
+                          alt={pages[visibleIndex]?.name ?? ""}
+                          draggable={false}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="readerControls">
-                  <button onClick={() => setReaderPage(selectedBook, pageIndex - 1)}>Previous</button>
+                  <button onClick={goReaderPrevious}>Previous</button>
+                  {selectedBook.format === "epub" && (
+                    <span className="epubProgress">
+                      Page {Math.min(epubPagePosition + 1, epubPageCount)} / {epubPageCount}
+                    </span>
+                  )}
                   <input
                     type="range"
                     min="0"
@@ -396,7 +726,7 @@ export function App() {
                     value={pageIndex}
                     onChange={(event) => setReaderPage(selectedBook, Number(event.target.value))}
                   />
-                  <button onClick={() => setReaderPage(selectedBook, pageIndex + 1)}>Next</button>
+                  <button onClick={goReaderNext}>Next</button>
                 </div>
               </>
             ) : (
@@ -478,6 +808,205 @@ export function App() {
       </section>
     </main>
   );
+}
+
+function EpubFrame({
+  book,
+  manifest,
+  pageIndex,
+  pageMode,
+  fontSize,
+  theme,
+  pagePosition,
+  onMetrics,
+}: {
+  book: Book;
+  manifest: EpubManifest | null;
+  pageIndex: number;
+  pageMode: ReaderPageMode;
+  fontSize: number;
+  theme: EpubTheme;
+  pagePosition: number;
+  onMetrics: (pageCount: number, pagePosition: number) => void;
+}) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const spineItem = manifest?.spine[pageIndex] ?? null;
+
+  useEffect(() => {
+    applyEpubLayout();
+    const timer = window.setTimeout(applyEpubLayout, 80);
+    return () => window.clearTimeout(timer);
+  }, [pageMode, fontSize, theme, pagePosition, spineItem?.href]);
+
+  function applyEpubLayout() {
+    const frame = iframeRef.current;
+    const doc = frame?.contentDocument;
+    const win = frame?.contentWindow;
+    if (!frame || !doc || !win || !spineItem) return;
+
+    const viewportWidth = Math.max(320, frame.clientWidth);
+    const viewportHeight = Math.max(320, frame.clientHeight);
+    const isDoublePage = pageMode === "double";
+    const horizontalPadding = isDoublePage ? 44 : 52;
+    const verticalPadding = isDoublePage ? 38 : 42;
+    const gap = isDoublePage
+      ? Math.min(42, Math.max(26, Math.round(viewportWidth * 0.028)))
+      : horizontalPadding * 2;
+    const dividerWidth = isDoublePage ? 2 : 0;
+    const readableWidth = Math.max(260, viewportWidth - horizontalPadding * 2);
+    const columnWidth = isDoublePage
+      ? Math.max(220, Math.floor((readableWidth - gap) / 2))
+      : readableWidth;
+    const pageWidth = isDoublePage ? (columnWidth + gap) * 2 : columnWidth + gap;
+    const palette = epubThemePalette(theme);
+    const bodyScrollWidth = Math.max(doc.body.scrollWidth, doc.documentElement.scrollWidth, viewportWidth);
+    const estimatedPageCount = Math.max(1, Math.ceil(bodyScrollWidth / pageWidth));
+    const estimatedPosition = Math.max(0, Math.min(pagePosition, estimatedPageCount - 1));
+    const style = doc.getElementById("foliospace-epub-style") ?? doc.createElement("style");
+    style.id = "foliospace-epub-style";
+    style.textContent = `
+      html {
+        width: ${viewportWidth}px !important;
+        min-width: ${viewportWidth}px !important;
+        height: ${viewportHeight}px !important;
+        margin: 0 !important;
+        overflow: hidden !important;
+        background: ${palette.background} !important;
+        color: ${palette.text} !important;
+      }
+      body {
+        width: ${viewportWidth}px !important;
+        min-width: ${viewportWidth}px !important;
+        height: ${viewportHeight}px !important;
+        margin: 0 !important;
+        overflow: visible !important;
+        background: ${palette.background} !important;
+        color: ${palette.text} !important;
+      }
+      body {
+        box-sizing: border-box !important;
+        padding: ${verticalPadding}px ${horizontalPadding}px !important;
+        font-size: ${fontSize}px !important;
+        line-height: 1.72 !important;
+        column-width: ${columnWidth}px !important;
+        column-gap: ${gap}px !important;
+        column-fill: auto !important;
+        position: relative !important;
+        transform-origin: top left !important;
+        transform: translateX(-${estimatedPosition * pageWidth}px) !important;
+        transition: transform 140ms ease !important;
+      }
+      html::before {
+        content: "" !important;
+        display: block !important;
+        position: fixed !important;
+        top: 0 !important;
+        right: 0 !important;
+        bottom: 0 !important;
+        width: ${horizontalPadding}px !important;
+        background: ${palette.background} !important;
+        box-shadow: -${viewportWidth - horizontalPadding}px 0 0 ${palette.background} !important;
+        pointer-events: none !important;
+        z-index: 2147483646 !important;
+      }
+      html::after {
+        content: "" !important;
+        display: ${isDoublePage ? "block" : "none"} !important;
+        position: fixed !important;
+        top: ${verticalPadding}px !important;
+        bottom: ${verticalPadding}px !important;
+        left: 50% !important;
+        width: ${dividerWidth}px !important;
+        margin-left: -${Math.floor(dividerWidth / 2)}px !important;
+        background: ${palette.divider} !important;
+        box-shadow: 0 0 10px ${palette.gutter} !important;
+        pointer-events: none !important;
+        z-index: 2147483647 !important;
+      }
+      body, p, li {
+        color: ${palette.text} !important;
+      }
+      a {
+        color: ${palette.link} !important;
+      }
+      img, svg {
+        max-width: 100% !important;
+        height: auto !important;
+      }
+    `;
+    if (!style.parentElement) {
+      doc.head.appendChild(style);
+    }
+
+    window.requestAnimationFrame(() => {
+      const pageCount = Math.max(1, Math.ceil(Math.max(doc.body.scrollWidth, doc.documentElement.scrollWidth) / pageWidth));
+      const nextPosition = Math.max(0, Math.min(pagePosition, pageCount - 1));
+      doc.body.style.transform = `translateX(-${nextPosition * pageWidth}px)`;
+      win.scrollTo({ left: 0, top: 0, behavior: "auto" });
+      onMetrics(pageCount, nextPosition);
+    });
+  }
+
+  if (!manifest || !spineItem) {
+    return (
+      <div className="epubEmpty" role="status">
+        Loading EPUB
+      </div>
+    );
+  }
+
+  return (
+    <iframe
+      ref={iframeRef}
+      key={`${book.id}-${spineItem.href}`}
+      className="epubFrame"
+      title={`${book.title} chapter ${pageIndex + 1}`}
+      sandbox="allow-same-origin"
+      src={`/api/books/${book.id}/epub/resources/${encodeResourcePath(spineItem.href)}`}
+      onLoad={applyEpubLayout}
+    />
+  );
+}
+
+function epubThemePalette(theme: EpubTheme) {
+  if (theme === "dark") {
+    return {
+      background: "#161b1d",
+      text: "#edf4f6",
+      link: "#85d5e3",
+      gutter: "#0f1315",
+      divider: "rgba(255, 255, 255, 0.16)",
+    };
+  }
+  if (theme === "sepia") {
+    return {
+      background: "#f4ecd9",
+      text: "#33291c",
+      link: "#7b5a24",
+      gutter: "#e5dac4",
+      divider: "rgba(76, 55, 31, 0.18)",
+    };
+  }
+  return {
+    background: "#ffffff",
+    text: "#20282c",
+    link: "#337f92",
+    gutter: "#edf2f4",
+    divider: "rgba(31, 42, 46, 0.16)",
+  };
+}
+
+function readEpubLocator(locator: string) {
+  const value = Number.parseInt(locator, 10);
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, value);
+}
+
+function encodeResourcePath(value: string) {
+  return value
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
 }
 
 function formatElapsed(job: ScanJob) {

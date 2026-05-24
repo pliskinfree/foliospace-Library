@@ -8,6 +8,8 @@ export type Series = {
   id: number;
   libraryId: number;
   title: string;
+  directoryPath: string;
+  collectionType: "directory";
   bookCount: number;
 };
 
@@ -15,6 +17,7 @@ export type Book = {
   id: number;
   seriesId: number;
   title: string;
+  bookType: "single_volume";
   format: string;
   pageCount: number;
   coverStatus: string;
@@ -25,6 +28,34 @@ export type Book = {
 export type Page = {
   index: number;
   name: string;
+};
+
+export type EpubManifest = {
+  title: string;
+  creator: string;
+  coverHref: string;
+  spine: EpubSpineItem[];
+  toc: EpubTocItem[];
+};
+
+export type EpubSpineItem = {
+  index: number;
+  id: string;
+  href: string;
+  mediaType: string;
+};
+
+export type EpubTocItem = {
+  label: string;
+  href: string;
+  index: number;
+};
+
+export type ReadProgress = {
+  bookId: number;
+  pageIndex: number;
+  locator: string;
+  progressFraction: number;
 };
 
 export type ScanJob = {
@@ -77,16 +108,23 @@ export const api = {
     }),
   deleteLibrary: (libraryId: number) => request<{ ok: boolean }>(`/api/libraries/${libraryId}`, { method: "DELETE" }),
   scan: (libraryId: number) => request<ScanJob>(`/api/libraries/${libraryId}/scan`, { method: "POST" }),
-  series: () => request<Series[]>("/api/series"),
-  books: (seriesId: number) => request<Book[]>(`/api/series/${seriesId}/books`),
+  series: () => request<Series[]>("/api/collections"),
+  books: (seriesId: number) => request<Book[]>(`/api/collections/${seriesId}/volumes`),
   pages: (bookId: number) => request<Page[]>(`/api/books/${bookId}/pages`),
+  epubManifest: (bookId: number) => request<EpubManifest>(`/api/books/${bookId}/epub/manifest`),
   jobs: () => request<ScanJob[]>("/api/jobs"),
   jobEvents: (jobId: number) => request<JobEvent[]>(`/api/jobs/${jobId}/events`),
   errors: () => request<FileError[]>("/api/errors"),
   jobErrors: (jobId: number) => request<FileError[]>(`/api/errors?jobId=${jobId}`),
+  readProgress: (bookId: number) => request<ReadProgress>(`/api/books/${bookId}/progress`),
   progress: (bookId: number, pageIndex: number) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/progress`, {
       method: "PUT",
       body: JSON.stringify({ pageIndex }),
+    }),
+  progressDetail: (bookId: number, pageIndex: number, locator: string, progressFraction: number) =>
+    request<{ ok: boolean }>(`/api/books/${bookId}/progress`, {
+      method: "PUT",
+      body: JSON.stringify({ pageIndex, locator, progressFraction }),
     }),
 };

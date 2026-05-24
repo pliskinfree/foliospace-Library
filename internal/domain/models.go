@@ -27,16 +27,19 @@ type Library struct {
 }
 
 type Series struct {
-	ID        int64  `json:"id"`
-	LibraryID int64  `json:"libraryId"`
-	Title     string `json:"title"`
-	BookCount int64  `json:"bookCount"`
+	ID             int64  `json:"id"`
+	LibraryID      int64  `json:"libraryId"`
+	Title          string `json:"title"`
+	DirectoryPath  string `json:"directoryPath"`
+	CollectionType string `json:"collectionType"`
+	BookCount      int64  `json:"bookCount"`
 }
 
 type Book struct {
 	ID          int64  `json:"id"`
 	SeriesID    int64  `json:"seriesId"`
 	Title       string `json:"title"`
+	BookType    string `json:"bookType"`
 	Format      string `json:"format"`
 	PageCount   int    `json:"pageCount"`
 	CoverStatus string `json:"coverStatus"`
@@ -58,6 +61,27 @@ type File struct {
 type Page struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
+}
+
+type EPUBManifest struct {
+	Title     string          `json:"title"`
+	Creator   string          `json:"creator"`
+	CoverHref string          `json:"coverHref"`
+	Spine     []EPUBSpineItem `json:"spine"`
+	TOC       []EPUBTOCItem   `json:"toc"`
+}
+
+type EPUBSpineItem struct {
+	Index     int    `json:"index"`
+	ID        string `json:"id"`
+	Href      string `json:"href"`
+	MediaType string `json:"mediaType"`
+}
+
+type EPUBTOCItem struct {
+	Label string `json:"label"`
+	Href  string `json:"href"`
+	Index int    `json:"index"`
 }
 
 type ScanJob struct {
@@ -82,9 +106,11 @@ type JobEvent struct {
 }
 
 type ReadProgress struct {
-	BookID    int64     `json:"bookId"`
-	PageIndex int       `json:"pageIndex"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	BookID           int64     `json:"bookId"`
+	PageIndex        int       `json:"pageIndex"`
+	Locator          string    `json:"locator"`
+	ProgressFraction float64   `json:"progressFraction"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type FileError struct {

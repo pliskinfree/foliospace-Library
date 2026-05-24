@@ -57,7 +57,7 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 		}
 
 		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".cbz" && ext != ".zip" {
+		if ext != ".cbz" && ext != ".zip" && ext != ".epub" {
 			return nil
 		}
 		job.CurrentPath = path
@@ -149,7 +149,7 @@ func (s *Scanner) indexFile(library domain.Library, jobID int64, path string, in
 		return err
 	}
 
-	pages, err := archive.ListPages(path)
+	pages, err := listBookPages(path, ext)
 	if err != nil {
 		return err
 	}
@@ -159,17 +159,24 @@ func (s *Scanner) indexFile(library domain.Library, jobID int64, path string, in
 	return nil
 }
 
+func listBookPages(path string, ext string) ([]domain.Page, error) {
+	if ext == ".epub" {
+		return archive.ListEPUBSpine(path)
+	}
+	return archive.ListPages(path)
+}
+
 func (s *Scanner) indexFileMetadata(library domain.Library, path string, info fs.FileInfo, ext string) (domain.Book, error) {
 	relPath, err := filepath.Rel(library.RootPath, path)
 	if err != nil {
 		return domain.Book{}, fmt.Errorf("relative path: %w", err)
 	}
 
-	seriesTitle := seriesTitleForRelPath(library.RootPath, relPath)
+	seriesTitle, seriesDirectoryPath := seriesIdentityForRelPath(library.RootPath, relPath)
 	bookTitle := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	format := strings.TrimPrefix(ext, ".")
 
-	series, err := s.store.UpsertSeries(library.ID, seriesTitle)
+	series, err := s.store.UpsertSeries(library.ID, seriesTitle, seriesDirectoryPath)
 	if err != nil {
 		return domain.Book{}, err
 	}
@@ -204,16 +211,17 @@ func (s *Scanner) recordPathError(libraryID int64, jobID int64, path string, cod
 	})
 }
 
-func seriesTitleForRelPath(rootPath string, relPath string) string {
+func seriesIdentityForRelPath(rootPath string, relPath string) (string, string) {
 	dir := filepath.Dir(relPath)
 	if dir == "." || dir == "/" {
 		rootName := filepath.Base(filepath.Clean(rootPath))
 		if rootName != "." && rootName != string(filepath.Separator) && rootName != "" {
-			return rootName
+			return rootName, "."
 		}
-		return "Unsorted"
+		return "Unsorted", "."
 	}
-	return filepath.Base(dir)
+	directoryPath := filepath.ToSlash(dir)
+	return directoryPath, directoryPath
 }
 
 func classifyWalkError(err error) domain.ErrorCode {

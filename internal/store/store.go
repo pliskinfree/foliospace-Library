@@ -120,19 +120,29 @@ func (s *Store) DeleteLibrary(id int64) error {
 	return tx.Commit()
 }
 
-func (s *Store) UpsertSeries(libraryID int64, title string) (domain.Series, error) {
-	_, err := s.db.Exec(`INSERT INTO series(library_id, title) VALUES(?, ?)
-		ON CONFLICT(library_id, title) DO UPDATE SET updated_at = CURRENT_TIMESTAMP`, libraryID, title)
+func (s *Store) UpsertSeries(libraryID int64, title string, directoryPath string) (domain.Series, error) {
+	_, err := s.db.Exec(`INSERT INTO series(library_id, title, directory_path, collection_type) VALUES(?, ?, ?, 'directory')
+		ON CONFLICT(library_id, title) DO UPDATE SET directory_path = excluded.directory_path, collection_type = 'directory', updated_at = CURRENT_TIMESTAMP`,
+		libraryID, title, directoryPath)
 	if err != nil {
 		return domain.Series{}, err
 	}
-	row := s.db.QueryRow(`SELECT id, library_id, title, 0 FROM series WHERE library_id = ? AND title = ?`, libraryID, title)
+	row := s.db.QueryRow(`SELECT id, library_id, title, directory_path, collection_type, 0 FROM series WHERE library_id = ? AND title = ?`, libraryID, title)
 	return scanSeries(row)
 }
 
 func (s *Store) ListSeries() ([]domain.Series, error) {
-	rows, err := s.db.Query(`SELECT s.id, s.library_id, s.title, COUNT(b.id)
-		FROM series s LEFT JOIN books b ON b.series_id = s.id
+	rows, err := s.db.Query(`SELECT s.id, s.library_id, s.title,
+			COALESCE(NULLIF(s.directory_path, ''), MIN(CASE
+				WHEN f.rel_path IS NULL THEN ''
+				WHEN INSTR(f.rel_path, '/') = 0 THEN '.'
+				ELSE SUBSTR(f.rel_path, 1, INSTR(f.rel_path, '/') - 1)
+			END), ''),
+			s.collection_type,
+			COUNT(DISTINCT b.id)
+		FROM series s
+		LEFT JOIN books b ON b.series_id = s.id
+		LEFT JOIN files f ON f.book_id = b.id
 		GROUP BY s.id, s.library_id, s.title
 		ORDER BY s.title`)
 	if err != nil {
@@ -349,16 +359,21 @@ func (s *Store) ListJobEvents(jobID int64) ([]domain.JobEvent, error) {
 }
 
 func (s *Store) SaveProgress(bookID int64, pageIndex int) error {
-	_, err := s.db.Exec(`INSERT INTO read_progress(book_id, page_index) VALUES(?, ?)
-		ON CONFLICT(book_id) DO UPDATE SET page_index = excluded.page_index, updated_at = CURRENT_TIMESTAMP`, bookID, pageIndex)
+	return s.SaveProgressDetail(bookID, pageIndex, "", 0)
+}
+
+func (s *Store) SaveProgressDetail(bookID int64, pageIndex int, locator string, progressFraction float64) error {
+	_, err := s.db.Exec(`INSERT INTO read_progress(book_id, page_index, locator, progress_fraction) VALUES(?, ?, ?, ?)
+		ON CONFLICT(book_id) DO UPDATE SET page_index = excluded.page_index, locator = excluded.locator, progress_fraction = excluded.progress_fraction, updated_at = CURRENT_TIMESTAMP`,
+		bookID, pageIndex, locator, progressFraction)
 	return err
 }
 
 func (s *Store) Progress(bookID int64) (domain.ReadProgress, error) {
-	row := s.db.QueryRow(`SELECT book_id, page_index, updated_at FROM read_progress WHERE book_id = ?`, bookID)
+	row := s.db.QueryRow(`SELECT book_id, page_index, locator, progress_fraction, updated_at FROM read_progress WHERE book_id = ?`, bookID)
 	var progress domain.ReadProgress
 	var updated string
-	if err := row.Scan(&progress.BookID, &progress.PageIndex, &updated); err != nil {
+	if err := row.Scan(&progress.BookID, &progress.PageIndex, &progress.Locator, &progress.ProgressFraction, &updated); err != nil {
 		return progress, err
 	}
 	progress.UpdatedAt = parseTime(updated)
@@ -425,7 +440,14 @@ func scanLibrary(row scanner) (domain.Library, error) {
 
 func scanSeries(row scanner) (domain.Series, error) {
 	var series domain.Series
-	if err := row.Scan(&series.ID, &series.LibraryID, &series.Title, &series.BookCount); err != nil {
+	if err := row.Scan(
+		&series.ID,
+		&series.LibraryID,
+		&series.Title,
+		&series.DirectoryPath,
+		&series.CollectionType,
+		&series.BookCount,
+	); err != nil {
 		return series, err
 	}
 	return series, nil
@@ -437,6 +459,7 @@ func scanBook(row scanner) (domain.Book, error) {
 	if err := row.Scan(&book.ID, &book.SeriesID, &book.Title, &book.Format, &book.PageCount, &book.CoverStatus, &analyzed, &book.FilePath); err != nil {
 		return book, err
 	}
+	book.BookType = "single_volume"
 	book.Analyzed = analyzed != 0
 	return book, nil
 }

@@ -25,6 +25,8 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/libraries", s.handleLibraries)
 	mux.HandleFunc("/api/libraries/", s.handleLibraryAction)
+	mux.HandleFunc("/api/collections", s.handleSeries)
+	mux.HandleFunc("/api/collections/", s.handleCollectionAction)
 	mux.HandleFunc("/api/series", s.handleSeries)
 	mux.HandleFunc("/api/series/", s.handleSeriesAction)
 	mux.HandleFunc("/api/books/", s.handleBookAction)
@@ -102,6 +104,20 @@ func (s *Server) handleSeriesAction(w http.ResponseWriter, r *http.Request) {
 	writeJSONOrError(w, items, err)
 }
 
+func (s *Server) handleCollectionAction(w http.ResponseWriter, r *http.Request) {
+	id, action, ok := parseIDAction(r.URL.Path, "/api/collections/")
+	if !ok || action != "volumes" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	items, err := s.service.ListBooks(id)
+	writeJSONOrError(w, items, err)
+}
+
 func (s *Server) handleBookAction(w http.ResponseWriter, r *http.Request) {
 	id, tail, ok := parseIDTail(r.URL.Path, "/api/books/")
 	if !ok {
@@ -115,7 +131,16 @@ func (s *Server) handleBookAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tail == "cover" && r.Method == http.MethodGet {
-		s.streamPage(w, id, 0)
+		s.streamCover(w, id)
+		return
+	}
+	if tail == "epub/manifest" && r.Method == http.MethodGet {
+		manifest, err := s.service.EPUBManifest(id)
+		writeJSONOrError(w, manifest, err)
+		return
+	}
+	if strings.HasPrefix(tail, "epub/resources/") && r.Method == http.MethodGet {
+		s.streamEPUBResource(w, id, strings.TrimPrefix(tail, "epub/resources/"))
 		return
 	}
 	if tail == "pages" && r.Method == http.MethodGet {
@@ -134,13 +159,24 @@ func (s *Server) handleBookAction(w http.ResponseWriter, r *http.Request) {
 	}
 	if tail == "progress" && r.Method == http.MethodPut {
 		var req struct {
-			PageIndex int `json:"pageIndex"`
+			PageIndex        int     `json:"pageIndex"`
+			Locator          string  `json:"locator"`
+			ProgressFraction float64 `json:"progressFraction"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		writeJSONOrError(w, map[string]bool{"ok": true}, s.service.SaveProgress(id, req.PageIndex))
+		writeJSONOrError(w, map[string]bool{"ok": true}, s.service.SaveProgressDetail(id, req.PageIndex, req.Locator, req.ProgressFraction))
+		return
+	}
+	if tail == "progress" && r.Method == http.MethodGet {
+		progress, err := s.service.Progress(id)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONOrError(w, domainDefaultProgress(id), nil)
+			return
+		}
+		writeJSONOrError(w, progress, err)
 		return
 	}
 	if tail == "analyze" && r.Method == http.MethodPost {
@@ -152,8 +188,41 @@ func (s *Server) handleBookAction(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+func domainDefaultProgress(bookID int64) map[string]any {
+	return map[string]any{
+		"bookId":           bookID,
+		"pageIndex":        0,
+		"locator":          "",
+		"progressFraction": 0,
+	}
+}
+
 func (s *Server) streamPage(w http.ResponseWriter, bookID int64, pageIndex int) {
 	page, err := s.service.OpenPage(bookID, pageIndex)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer page.Body.Close()
+
+	w.Header().Set("Content-Type", page.ContentType)
+	_, _ = io.Copy(w, page.Body)
+}
+
+func (s *Server) streamCover(w http.ResponseWriter, bookID int64) {
+	page, err := s.service.OpenCover(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer page.Body.Close()
+
+	w.Header().Set("Content-Type", page.ContentType)
+	_, _ = io.Copy(w, page.Body)
+}
+
+func (s *Server) streamEPUBResource(w http.ResponseWriter, bookID int64, resourcePath string) {
+	page, err := s.service.OpenEPUBResource(bookID, resourcePath)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

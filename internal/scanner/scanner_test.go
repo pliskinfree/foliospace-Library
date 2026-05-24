@@ -14,6 +14,8 @@ import (
 func TestScanLibraryIndexesValidArchivesAndRecordsEmptyFile(t *testing.T) {
 	root := t.TempDir()
 	makeZip(t, filepath.Join(root, "Series A", "book1.cbz"), map[string]string{"001.jpg": "image"})
+	makeZip(t, filepath.Join(root, "Publisher", "Series A", "book2.cbz"), map[string]string{"001.jpg": "image"})
+	makeZip(t, filepath.Join(root, "Books", "novel.epub"), sampleEPUBEntries())
 	makeZip(t, filepath.Join(root, "root-book.zip"), map[string]string{"001.png": "image"})
 	if err := os.WriteFile(filepath.Join(root, "Series A", "empty.cbz"), nil, 0o644); err != nil {
 		t.Fatal(err)
@@ -38,8 +40,8 @@ func TestScanLibraryIndexesValidArchivesAndRecordsEmptyFile(t *testing.T) {
 	if job.Status != "completed" {
 		t.Fatalf("job status = %q, want completed", job.Status)
 	}
-	if job.IndexedFiles != 2 {
-		t.Fatalf("indexed files = %d, want 2", job.IndexedFiles)
+	if job.IndexedFiles != 4 {
+		t.Fatalf("indexed files = %d, want 4", job.IndexedFiles)
 	}
 	if job.ErrorCount != 1 {
 		t.Fatalf("error count = %d, want 1", job.ErrorCount)
@@ -49,8 +51,8 @@ func TestScanLibraryIndexesValidArchivesAndRecordsEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(series) != 2 {
-		t.Fatalf("series len = %d, want 2", len(series))
+	if len(series) != 4 {
+		t.Fatalf("series len = %d, want 4", len(series))
 	}
 	titles := map[string]bool{}
 	for _, item := range series {
@@ -59,9 +61,29 @@ func TestScanLibraryIndexesValidArchivesAndRecordsEmptyFile(t *testing.T) {
 	if !titles["Series A"] {
 		t.Fatalf("series titles = %#v, want Series A", titles)
 	}
+	if !titles["Publisher/Series A"] {
+		t.Fatalf("series titles = %#v, want Publisher/Series A", titles)
+	}
+	if !titles["Books"] {
+		t.Fatalf("series titles = %#v, want Books", titles)
+	}
 	rootSeries := filepath.Base(root)
 	if !titles[rootSeries] {
 		t.Fatalf("series titles = %#v, want root series %q", titles, rootSeries)
+	}
+	for _, item := range series {
+		if item.CollectionType != "directory" {
+			t.Fatalf("collection type for %q = %q, want directory", item.Title, item.CollectionType)
+		}
+		if item.Title == "Series A" && item.DirectoryPath != "Series A" {
+			t.Fatalf("directory path for Series A = %q, want Series A", item.DirectoryPath)
+		}
+		if item.Title == "Publisher/Series A" && item.DirectoryPath != "Publisher/Series A" {
+			t.Fatalf("directory path for Publisher/Series A = %q, want Publisher/Series A", item.DirectoryPath)
+		}
+		if item.Title == rootSeries && item.DirectoryPath != "." {
+			t.Fatalf("directory path for root series = %q, want .", item.DirectoryPath)
+		}
 	}
 
 	errors, err := st.ListFileErrors()
@@ -76,8 +98,8 @@ func TestScanLibraryIndexesValidArchivesAndRecordsEmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secondJob.SkippedFiles != 2 {
-		t.Fatalf("second scan skipped files = %d, want 2", secondJob.SkippedFiles)
+	if secondJob.SkippedFiles != 4 {
+		t.Fatalf("second scan skipped files = %d, want 4", secondJob.SkippedFiles)
 	}
 	if secondJob.IndexedFiles != 0 {
 		t.Fatalf("second scan indexed files = %d, want 0", secondJob.IndexedFiles)
@@ -100,7 +122,7 @@ func TestScanLibraryMovesLegacyRootFileToLibrarySeries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacySeries, err := st.UpsertSeries(lib.ID, "Unsorted")
+	legacySeries, err := st.UpsertSeries(lib.ID, "Unsorted", ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,5 +192,31 @@ func makeZip(t *testing.T, path string, entries map[string]string) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func sampleEPUBEntries() map[string]string {
+	return map[string]string{
+		"META-INF/container.xml": `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`,
+		"OPS/package.opf": `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Sample EPUB</dc:title>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="text/chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="cover" href="images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+  </spine>
+</package>`,
+		"OPS/text/chapter1.xhtml": `<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter</h1></body></html>`,
+		"OPS/images/cover.jpg":    "cover",
 	}
 }

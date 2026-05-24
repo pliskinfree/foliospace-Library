@@ -43,6 +43,8 @@ func Migrate(conn *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
 			title TEXT NOT NULL,
+			directory_path TEXT NOT NULL DEFAULT '',
+			collection_type TEXT NOT NULL DEFAULT 'directory',
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(library_id, title)
@@ -102,6 +104,8 @@ func Migrate(conn *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS read_progress (
 			book_id INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
 			page_index INTEGER NOT NULL,
+			locator TEXT NOT NULL DEFAULT '',
+			progress_fraction REAL NOT NULL DEFAULT 0,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS file_errors (
@@ -125,6 +129,18 @@ func Migrate(conn *sql.DB) error {
 		}
 	}
 	if err := addColumnIfMissing(conn, "scan_jobs", "current_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(conn, "series", "directory_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(conn, "series", "collection_type", "TEXT NOT NULL DEFAULT 'directory'"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(conn, "read_progress", "locator", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(conn, "read_progress", "progress_fraction", "REAL NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil

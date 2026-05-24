@@ -20,7 +20,7 @@ func TestStorePersistsLibraryBookProgressAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	series, err := s.UpsertSeries(lib.ID, "Series A")
+	series, err := s.UpsertSeries(lib.ID, "Series A", "Series A")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +56,13 @@ func TestStorePersistsLibraryBookProgressAndErrors(t *testing.T) {
 	}
 	if len(libraries) != 1 {
 		t.Fatalf("libraries len = %d, want 1", len(libraries))
+	}
+	seriesList, err := s.ListSeries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seriesList) != 1 || seriesList[0].DirectoryPath != "Series A" || seriesList[0].CollectionType != "directory" {
+		t.Fatalf("series list = %#v, want directory collection at Series A", seriesList)
 	}
 
 	progress, err := s.Progress(book.ID)
