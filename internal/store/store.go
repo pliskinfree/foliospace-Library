@@ -17,16 +17,12 @@ func New(db *sql.DB) *Store {
 }
 
 func (s *Store) CreateLibrary(name string, rootPath string) (domain.Library, error) {
-	res, err := s.db.Exec(`INSERT INTO libraries(name, root_path) VALUES(?, ?)
+	_, err := s.db.Exec(`INSERT INTO libraries(name, root_path) VALUES(?, ?)
 		ON CONFLICT(root_path) DO UPDATE SET name = excluded.name, updated_at = CURRENT_TIMESTAMP`, name, rootPath)
 	if err != nil {
 		return domain.Library{}, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
-		return s.LibraryByRoot(rootPath)
-	}
-	return s.LibraryByID(id)
+	return s.LibraryByRoot(rootPath)
 }
 
 func (s *Store) LibraryByID(id int64) (domain.Library, error) {
@@ -58,17 +54,12 @@ func (s *Store) ListLibraries() ([]domain.Library, error) {
 }
 
 func (s *Store) UpsertSeries(libraryID int64, title string) (domain.Series, error) {
-	res, err := s.db.Exec(`INSERT INTO series(library_id, title) VALUES(?, ?)
+	_, err := s.db.Exec(`INSERT INTO series(library_id, title) VALUES(?, ?)
 		ON CONFLICT(library_id, title) DO UPDATE SET updated_at = CURRENT_TIMESTAMP`, libraryID, title)
 	if err != nil {
 		return domain.Series{}, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
-		row := s.db.QueryRow(`SELECT id, library_id, title, 0 FROM series WHERE library_id = ? AND title = ?`, libraryID, title)
-		return scanSeries(row)
-	}
-	row := s.db.QueryRow(`SELECT id, library_id, title, 0 FROM series WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, library_id, title, 0 FROM series WHERE library_id = ? AND title = ?`, libraryID, title)
 	return scanSeries(row)
 }
 
@@ -94,16 +85,12 @@ func (s *Store) ListSeries() ([]domain.Series, error) {
 }
 
 func (s *Store) UpsertBook(seriesID int64, title string, format string) (domain.Book, error) {
-	res, err := s.db.Exec(`INSERT INTO books(series_id, title, format) VALUES(?, ?, ?)
+	_, err := s.db.Exec(`INSERT INTO books(series_id, title, format) VALUES(?, ?, ?)
 		ON CONFLICT(series_id, title, format) DO UPDATE SET updated_at = CURRENT_TIMESTAMP`, seriesID, title, format)
 	if err != nil {
 		return domain.Book{}, err
 	}
-	id, _ := res.LastInsertId()
-	if id == 0 {
-		return s.BookBySeriesTitle(seriesID, title, format)
-	}
-	return s.BookByID(id)
+	return s.BookBySeriesTitle(seriesID, title, format)
 }
 
 func (s *Store) BookBySeriesTitle(seriesID int64, title string, format string) (domain.Book, error) {
