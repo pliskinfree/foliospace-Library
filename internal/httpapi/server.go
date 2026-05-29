@@ -134,11 +134,19 @@ func (s *Server) handleSetupInitialize(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	submittedToken := strings.TrimSpace(req.Token)
 	if s.envTokenConfigured() {
 		req.Token = ""
 	}
 	lib, err := s.service.InitializeSetup(req, status.TokenConfigured)
-	writeJSONOrError(w, lib, err)
+	if err != nil {
+		writeJSONOrError(w, lib, err)
+		return
+	}
+	if token := s.setupCookieToken(r, submittedToken); token != "" {
+		s.setAuthCookie(w, token)
+	}
+	writeJSON(w, lib)
 }
 
 func (s *Server) handleDirectoryRoots(w http.ResponseWriter, r *http.Request) {
@@ -468,6 +476,24 @@ func (s *Server) authorizeAPI(w http.ResponseWriter, r *http.Request) bool {
 
 func (s *Server) requestAuthorized(r *http.Request) bool {
 	return s.validToken(bearerToken(r.Header.Get("Authorization"))) || s.validCookie(r)
+}
+
+func (s *Server) requestToken(r *http.Request) string {
+	if token := bearerToken(r.Header.Get("Authorization")); s.validToken(token) {
+		return token
+	}
+	cookie, err := r.Cookie(authCookieName)
+	if err == nil && s.validToken(cookie.Value) {
+		return cookie.Value
+	}
+	return ""
+}
+
+func (s *Server) setupCookieToken(r *http.Request, submittedToken string) string {
+	if s.validToken(submittedToken) {
+		return submittedToken
+	}
+	return s.requestToken(r)
 }
 
 func (s *Server) authEnabled() bool {

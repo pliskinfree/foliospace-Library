@@ -574,9 +574,24 @@ func TestSetupStatusAndInitializeStoresTokenAndLibrary(t *testing.T) {
 		t.Fatalf("setup status = %q, want uninitialized status with directory roots", statusBody)
 	}
 
-	initBody := postJSONBody(t, ts.URL+"/api/setup/initialize", `{"token":"secret-token","name":"Books","rootPath":"`+root+`","assetType":"book"}`)
+	initResp, err := http.Post(ts.URL+"/api/setup/initialize", "application/json", strings.NewReader(`{"token":"secret-token","name":"Books","rootPath":"`+root+`","assetType":"book"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initData, err := io.ReadAll(initResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = initResp.Body.Close()
+	if initResp.StatusCode >= 400 {
+		t.Fatalf("POST setup initialize status %d: %s", initResp.StatusCode, initData)
+	}
+	initBody := string(initData)
 	if !strings.Contains(initBody, `"name":"Books"`) || !strings.Contains(initBody, `"assetType":"book"`) {
 		t.Fatalf("initialize response = %q, want created book library", initBody)
+	}
+	if len(initResp.Cookies()) == 0 || initResp.Cookies()[0].Name != authCookieName {
+		t.Fatalf("initialize cookies = %+v, want auth cookie", initResp.Cookies())
 	}
 
 	authBody := get(t, ts.URL+"/api/auth/status")
@@ -594,6 +609,21 @@ func TestSetupStatusAndInitializeStoresTokenAndLibrary(t *testing.T) {
 	collectionsBody := authGet(t, ts.URL+"/api/collections", "secret-token")
 	if strings.Contains(collectionsBody, "Unauthorized") {
 		t.Fatalf("authorized collections response = %q", collectionsBody)
+	}
+	cookieReq, err := http.NewRequest(http.MethodGet, ts.URL+"/api/collections", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range initResp.Cookies() {
+		cookieReq.AddCookie(cookie)
+	}
+	cookieResp, err := http.DefaultClient.Do(cookieReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cookieResp.Body.Close()
+	if cookieResp.StatusCode != http.StatusOK {
+		t.Fatalf("cookie-authenticated collections status = %d, want 200", cookieResp.StatusCode)
 	}
 }
 
