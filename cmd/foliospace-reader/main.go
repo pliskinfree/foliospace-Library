@@ -21,6 +21,11 @@ func main() {
 	defer conn.Close()
 
 	appStore := store.New(conn)
+	if count, err := appStore.CancelInterruptedScanJobs(); err != nil {
+		log.Printf("failed to mark interrupted scan jobs: %v", err)
+	} else if count > 0 {
+		log.Printf("marked %d interrupted scan job(s) as cancelled", count)
+	}
 
 	api := httpapi.NewWithOptions(service.NewWithConfig(appStore, cfg.ConfigDir), http.FileServer(http.Dir("web/dist")), httpapi.Options{APIToken: cfg.APIToken})
 

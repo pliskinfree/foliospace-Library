@@ -166,6 +166,71 @@ func TestStoreRequestsScanJobControl(t *testing.T) {
 	}
 }
 
+func TestStoreCancelsInterruptedScanJobs(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	s := New(conn)
+	lib, err := s.CreateLibrary("Comics", "/library")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := s.StartScanJob(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRequested, err := s.StartScanJob(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RequestScanJobCancel(cancelRequested.ID); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.StartScanJob(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed.Status = "completed"
+	completed.FinishedAt = time.Now()
+	if err := s.UpdateScanJob(completed); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := s.CancelInterruptedScanJobs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	for _, id := range []int64{running.ID, cancelRequested.ID} {
+		job, err := s.ScanJobByID(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Status != "cancelled" || job.FinishedAt.IsZero() {
+			t.Fatalf("job %d = %#v, want cancelled with finished_at", id, job)
+		}
+		events, err := s.ListJobEvents(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].Level != "warn" {
+			t.Fatalf("events for job %d = %#v, want cleanup warning", id, events)
+		}
+	}
+	gotCompleted, err := s.ScanJobByID(completed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCompleted.Status != "completed" {
+		t.Fatalf("completed job status = %q, want completed", gotCompleted.Status)
+	}
+}
+
 func TestStorePersistsAndListsGameAssets(t *testing.T) {
 	conn, err := db.Open(t.TempDir())
 	if err != nil {
