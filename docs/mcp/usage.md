@@ -21,10 +21,10 @@ This installs `foliospace-mcp` to:
 Release packages are expected at:
 
 ```text
-https://foliospace.app/releases/foliospace-mcp_0.8_darwin_arm64.tar.gz
-https://foliospace.app/releases/foliospace-mcp_0.8_darwin_amd64.tar.gz
-https://foliospace.app/releases/foliospace-mcp_0.8_linux_arm64.tar.gz
-https://foliospace.app/releases/foliospace-mcp_0.8_linux_amd64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.82_darwin_arm64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.82_darwin_amd64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.82_linux_arm64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.82_linux_amd64.tar.gz
 https://foliospace.app/releases/checksums.txt
 ```
 
@@ -107,11 +107,13 @@ Open the manifest for book 12 and tell me whether it is EPUB or CBZ.
 - `foliospace.client_info`: service name, version, supported formats, and capability flags.
 - `foliospace.home`: continue reading, recent books, and collections.
 - `foliospace.search_books`: search indexed books and comics.
-- `foliospace.open_book_manifest`: open a CBZ/ZIP/EPUB client manifest by `bookId`.
+- `foliospace.open_book_manifest`: open a CBZ/ZIP/EPUB/PDF client manifest by `bookId`. PDF manifests expose the opaque PDF stream URL; clients should use HTTP Range capable reads against that URL.
 - `foliospace.list_games`: list paginated client-safe ROM assets with `limit`, `offset`, `q`, `platform`, `format`, and `sort`.
 - `foliospace.open_game_manifest`: open a ROM client manifest by `gameId`.
 - `foliospace.get_preferences`: read client preferences such as interface language.
 - `foliospace.save_preferences`: save client preferences.
+- `foliospace.get_scan_settings`: read scan runtime settings such as worker count.
+- `foliospace.save_scan_settings`: save scan runtime settings such as `scanWorkers`.
 - `foliospace.get_private_state`: read per-book private state.
 - `foliospace.save_private_state`: save per-book private state.
 - `foliospace.list_favorites`: list favorite books as client-safe DTOs.
@@ -136,6 +138,7 @@ Open the manifest for book 12 and tell me whether it is EPUB or CBZ.
 - `foliospace://client/info`
 - `foliospace://client/home`
 - `foliospace://client/preferences`
+- `foliospace://settings/scan`
 - `foliospace://libraries`
 - `foliospace://jobs`
 - `foliospace://errors`

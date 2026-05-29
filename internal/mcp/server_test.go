@@ -28,6 +28,8 @@ func TestServerListsTools(t *testing.T) {
 		!strings.Contains(body, "foliospace.list_games") ||
 		!strings.Contains(body, "foliospace.open_game_manifest") ||
 		!strings.Contains(body, "foliospace.list_favorites") ||
+		!strings.Contains(body, "foliospace.get_scan_settings") ||
+		!strings.Contains(body, "foliospace.save_scan_settings") ||
 		!strings.Contains(body, "foliospace.list_collection_volumes") ||
 		!strings.Contains(body, "foliospace.pause_job") ||
 		!strings.Contains(body, "foliospace.library_health") {
@@ -104,6 +106,30 @@ func TestServerCallsClientGamesTool(t *testing.T) {
 	}
 	if gotPath != "/api/client/games?format=nes&limit=50&offset=100&platform=nes&q=contra&sort=title" {
 		t.Fatalf("path = %s, want client games query", gotPath)
+	}
+}
+
+func TestServerCallsScanSettingsTools(t *testing.T) {
+	var calls []string
+	server := New("http://foliospace.test", "")
+	server.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		return jsonResponse(`{"scanWorkers":4}`), nil
+	})}
+
+	getResponse := server.Handle(context.Background(), toolCall(t, "foliospace.get_scan_settings", nil))
+	if getResponse.Error != nil {
+		t.Fatalf("get scan settings error = %#v", getResponse.Error)
+	}
+	saveResponse := server.Handle(context.Background(), toolCall(t, "foliospace.save_scan_settings", map[string]any{"scanWorkers": 4}))
+	if saveResponse.Error != nil {
+		t.Fatalf("save scan settings error = %#v", saveResponse.Error)
+	}
+
+	got := strings.Join(calls, "\n")
+	want := "GET /api/settings/scan\nPUT /api/settings/scan"
+	if got != want {
+		t.Fatalf("calls = %q, want %q", got, want)
 	}
 }
 

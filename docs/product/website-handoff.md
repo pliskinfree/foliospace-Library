@@ -25,7 +25,7 @@ FolioSpaceReader
 Docker image:
 
 ```text
-funland/foliospace-library:0.8
+funland/foliospace-library:0.82
 ```
 
 Suggested CLI / binary name for future release work:
@@ -37,7 +37,7 @@ foliospace-library
 Current release:
 
 ```text
-0.8
+0.82
 ```
 
 ## One-Line Description
@@ -225,7 +225,7 @@ Suggested home-page sections:
 Primary Docker command:
 
 ```bash
-docker pull funland/foliospace-library:0.8
+docker pull funland/foliospace-library:0.82
 ```
 
 Simple NAS run example:
@@ -240,7 +240,7 @@ docker run -d \
   -v /volume2/Books:/books:ro \
   -v /volume2/GameROMS:/games:ro \
   -e FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games \
-  funland/foliospace-library:0.8
+  funland/foliospace-library:0.82
 ```
 
 Open:
@@ -262,7 +262,7 @@ Reference compose:
 ```yaml
 services:
   foliospace-library:
-    image: funland/foliospace-library:0.8
+    image: funland/foliospace-library:0.82
     ports:
       - "8080:8080"
     volumes:
@@ -339,6 +339,8 @@ GET  /api/client/home
 GET  /api/client/search?q=...
 GET  /api/client/preferences
 PUT  /api/client/preferences
+GET  /api/settings/scan
+PUT  /api/settings/scan
 
 GET  /api/client/books/:id/manifest
 GET  /api/client/books/:id/private-state
@@ -363,7 +365,7 @@ Client API responses should not expose real absolute NAS paths. They return opaq
 3. GET /api/client/info
 4. GET /api/client/home
 5. Open a book with GET /api/client/books/{bookId}/manifest
-6. Stream CBZ/ZIP pages from returned page URLs, or EPUB spine/resources from the EPUB manifest.
+6. Stream CBZ/ZIP pages from returned page URLs, EPUB spine/resources from the EPUB manifest, or PDF data from the Range-capable PDF page URL.
 7. Sync reading progress and private state.
 8. Open a game with GET /api/client/games/{gameId}/manifest and pass the service file URL to the native emulator layer.
 ```
@@ -402,7 +404,7 @@ User computer / agent runtime:
   foliospace-mcp binary
   Codex, Claude Desktop, or another MCP client
 
-The MCP server calls FolioSpace Library through HTTP API. Large media content such as comic pages, EPUB resources, and ROM files still streams through the HTTP URLs returned by the API.
+The MCP server calls FolioSpace Library through HTTP API. Large media content such as comic pages, EPUB resources, PDF streams, and ROM files still streams through the HTTP URLs returned by the API.
 ```
 
 End-user install:
@@ -421,10 +423,10 @@ Release package placeholders to publish on the website:
 
 ```text
 /install-mcp.sh
-/releases/foliospace-mcp_0.8_darwin_arm64.tar.gz
-/releases/foliospace-mcp_0.8_darwin_amd64.tar.gz
-/releases/foliospace-mcp_0.8_linux_arm64.tar.gz
-/releases/foliospace-mcp_0.8_linux_amd64.tar.gz
+/releases/foliospace-mcp_0.82_darwin_arm64.tar.gz
+/releases/foliospace-mcp_0.82_darwin_amd64.tar.gz
+/releases/foliospace-mcp_0.82_linux_arm64.tar.gz
+/releases/foliospace-mcp_0.82_linux_amd64.tar.gz
 /releases/checksums.txt
 ```
 
@@ -433,16 +435,16 @@ Current local release artifact source for the website build:
 ```text
 /Users/deadseafu/Documents/FolioSpaceReader/dist/install-mcp.sh
 /Users/deadseafu/Documents/FolioSpaceReader/dist/releases/checksums.txt
-/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.8_darwin_arm64.tar.gz
-/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.8_darwin_amd64.tar.gz
-/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.8_linux_arm64.tar.gz
-/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.8_linux_amd64.tar.gz
+/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.82_darwin_arm64.tar.gz
+/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.82_darwin_amd64.tar.gz
+/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.82_linux_arm64.tar.gz
+/Users/deadseafu/Documents/FolioSpaceReader/dist/releases/foliospace-mcp_0.82_linux_amd64.tar.gz
 ```
 
 Maintainer build command:
 
 ```bash
-VERSION=0.8 ./scripts/build-mcp-release.sh
+VERSION=0.82 ./scripts/build-mcp-release.sh
 ```
 
 Environment:
@@ -622,23 +624,21 @@ FolioSpace Library is designed for self-hosted local libraries. Client APIs retu
 Docker Hub image:
 
 ```text
-funland/foliospace-library:0.8
-funland/foliospace-library:latest
+funland/foliospace-library:0.82
+funland/foliospace-library:latest should be promoted after the 0.82 Docker Hub upload succeeds.
 ```
 
 Current Docker Hub digest:
 
 ```text
-manifest: sha256:b22a5789e5526c428c43dac823808b5f75a8dfda712c5da0da0d48d6fa8dab09
-amd64:    sha256:98acf925bec40554a45b1ffbe417c25b112dfc6469455627614675a8500eb69c
-arm64:    sha256:6cc022d7e4e6dbab3e03b7d46d247391491598f148478c08c00c6d75959d6396
+0.82 digest should be filled after Docker Hub registry upload succeeds.
 ```
 
 Architectures:
 
 ```text
-linux/amd64
-linux/arm64
+0.82 build prepared on linux/amd64.
+Use a buildx-capable host to publish a multi-architecture linux/amd64 + linux/arm64 manifest.
 ```
 
 Service version returned by API:
@@ -646,7 +646,7 @@ Service version returned by API:
 ```json
 {
   "serviceName": "FolioSpace Library",
-  "serviceVersion": "0.8",
+  "serviceVersion": "0.82",
   "apiVersion": "v1"
 }
 ```
@@ -660,4 +660,4 @@ These should be confirmed before publishing:
 - Final feedback channel.
 - Whether API docs are rendered from Markdown directly or rewritten as website pages.
 - Whether screenshots are real captures or designed placeholders for the first launch.
-- Whether Docker Hub is the only public distribution channel for 0.8.
+- Whether Docker Hub is the only public distribution channel for 0.82.

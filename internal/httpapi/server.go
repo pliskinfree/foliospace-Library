@@ -26,7 +26,7 @@ type Options struct {
 }
 
 const authCookieName = "foliospace_api_token"
-const serviceVersion = "0.8"
+const serviceVersion = "0.82"
 
 func New(service *service.Service, static http.Handler) *Server {
 	return NewWithOptions(service, static, Options{})
@@ -233,6 +233,8 @@ func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
 			UnifiedManifest:   true,
 			ProgressSync:      true,
 			EPUBStreaming:     true,
+			PDFStreaming:      true,
+			PDFPageLayout:     true,
 			PageStreaming:     true,
 			GameShelf:         true,
 			GameCatalog:       true,
@@ -243,6 +245,7 @@ func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
 			SetupWizard:       true,
 			ScannerJobEvents:  true,
 			ScannerJobControl: true,
+			ScanSettings:      true,
 		},
 	})
 }
@@ -1159,6 +1162,8 @@ type clientCapabilities struct {
 	UnifiedManifest   bool `json:"unifiedManifest"`
 	ProgressSync      bool `json:"progressSync"`
 	EPUBStreaming     bool `json:"epubStreaming"`
+	PDFStreaming      bool `json:"pdfStreaming"`
+	PDFPageLayout     bool `json:"pdfPageLayout"`
 	PageStreaming     bool `json:"pageStreaming"`
 	GameShelf         bool `json:"gameShelf"`
 	GameCatalog       bool `json:"gameCatalog"`
@@ -1169,6 +1174,7 @@ type clientCapabilities struct {
 	SetupWizard       bool `json:"setupWizard"`
 	ScannerJobEvents  bool `json:"scannerJobEvents"`
 	ScannerJobControl bool `json:"scannerJobControl"`
+	ScanSettings      bool `json:"scanSettings"`
 }
 
 type clientHomeResponse struct {

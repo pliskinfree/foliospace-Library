@@ -69,7 +69,7 @@ Public. Clears the web auth cookie.
 
 ## First-Run Setup
 
-Release `0.8` supports a web-first setup flow for Docker deployments. A fresh `/config` starts uninitialized until it has an access token and at least one configured library.
+Release `0.82` supports a web-first setup flow for Docker deployments. A fresh `/config` starts uninitialized until it has an access token and at least one configured library.
 
 Environment variable token auth still has priority. If `FOLIOSPACE_API_TOKEN` is set, `POST /api/setup/initialize` must include that token as a bearer token and the setup page treats the token field as the existing deployment token. If `FOLIOSPACE_API_TOKEN` is empty, setup stores the first user-provided token as a SHA-256 hash in SQLite.
 
@@ -160,14 +160,16 @@ Response:
 ```json
 {
   "serviceName": "FolioSpace Library",
-  "serviceVersion": "0.8",
+  "serviceVersion": "0.82",
   "apiVersion": "v1",
-  "supportedFormats": ["cbz", "zip", "epub", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"],
+  "supportedFormats": ["cbz", "zip", "epub", "pdf", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"],
   "capabilities": {
     "clientHome": true,
     "unifiedManifest": true,
     "progressSync": true,
     "epubStreaming": true,
+    "pdfStreaming": true,
+    "pdfPageLayout": true,
     "pageStreaming": true,
     "gameShelf": true,
     "gameCatalog": true,
@@ -177,10 +179,13 @@ Response:
     "bearerTokenAuth": true,
     "setupWizard": true,
     "scannerJobEvents": true,
-    "scannerJobControl": true
+    "scannerJobControl": true,
+    "scanSettings": true
   }
 }
 ```
+
+PDF clients should read the manifest through `GET /api/client/books/{bookId}/manifest`, then fetch the PDF through the opaque page URL at `GET /api/books/{bookId}/pages/0`. The server supports HTTP Range requests for that URL, so native clients can stream PDF data without exposing the NAS path. `pdfPageLayout` means clients may offer single-page and two-page spread modes on top of the same PDF stream.
 
 ### `GET /api/client/preferences`
 
@@ -720,6 +725,26 @@ Lists recent scan jobs.
 ### `GET /api/jobs/{jobId}/events`
 
 Lists job events. Events include scan start, worker count, skipped/indexed files, errors, pause/cancel state, and completion.
+
+### `GET /api/settings/scan`
+
+Returns scan runtime settings.
+
+```json
+{
+  "scanWorkers": 4
+}
+```
+
+### `PUT /api/settings/scan`
+
+Saves scan runtime settings and returns the normalized value. `scanWorkers` is currently clamped to the supported server range.
+
+```json
+{
+  "scanWorkers": 8
+}
+```
 
 ### `POST /api/jobs/{jobId}/pause`
 

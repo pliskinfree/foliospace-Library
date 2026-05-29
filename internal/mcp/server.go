@@ -51,7 +51,7 @@ type Resource struct {
 	MimeType    string `json:"mimeType,omitempty"`
 }
 
-const serviceVersion = "0.8"
+const serviceVersion = "0.82"
 
 func New(baseURL string, token string) *Server {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
@@ -118,6 +118,8 @@ func tools() []Tool {
 		{Name: "foliospace.open_game_manifest", Description: "Open a game ROM manifest with metadata, cover URL, and opaque file URL.", InputSchema: objectSchema(map[string]any{"gameId": integerSchema("Game asset id.")}, []string{"gameId"})},
 		{Name: "foliospace.get_preferences", Description: "Read client preferences such as interface language, reader settings, and feature defaults.", InputSchema: objectSchema(nil, nil)},
 		{Name: "foliospace.save_preferences", Description: "Save client preferences. Pass the same JSON shape as the HTTP Client API.", InputSchema: objectSchema(map[string]any{"interfaceLanguage": stringSchema("Interface language code, for example zh-Hans, zh-Hant, en, or ja.")}, nil)},
+		{Name: "foliospace.get_scan_settings", Description: "Read scan runtime settings such as worker count.", InputSchema: objectSchema(nil, nil)},
+		{Name: "foliospace.save_scan_settings", Description: "Save scan runtime settings. scanWorkers is normalized by the server.", InputSchema: objectSchema(map[string]any{"scanWorkers": integerSchema("Concurrent scan worker count, normalized by the server.")}, []string{"scanWorkers"})},
 		{Name: "foliospace.get_private_state", Description: "Read per-book private reader state such as bookmarks, notes, selected text, or local-only UI state.", InputSchema: objectSchema(map[string]any{"bookId": integerSchema("Book id.")}, []string{"bookId"})},
 		{Name: "foliospace.save_private_state", Description: "Save per-book private reader state. bookId selects the book; remaining fields are forwarded to the API.", InputSchema: objectSchema(map[string]any{"bookId": integerSchema("Book id.")}, []string{"bookId"})},
 		{Name: "foliospace.list_favorites", Description: "List favorite books as client-safe DTOs.", InputSchema: objectSchema(map[string]any{"limit": integerSchema("Maximum number of results.")}, nil)},
@@ -144,6 +146,7 @@ func resources() []Resource {
 		{URI: "foliospace://client/info", Name: "Client Info", Description: "Current FolioSpace Library service metadata.", MimeType: "application/json"},
 		{URI: "foliospace://client/home", Name: "Home", Description: "Continue reading, recent books, and collections.", MimeType: "application/json"},
 		{URI: "foliospace://client/preferences", Name: "Preferences", Description: "Client preference state.", MimeType: "application/json"},
+		{URI: "foliospace://settings/scan", Name: "Scan Settings", Description: "Scan worker and runtime settings.", MimeType: "application/json"},
 		{URI: "foliospace://libraries", Name: "Libraries", Description: "Configured libraries for diagnostics and scan selection.", MimeType: "application/json"},
 		{URI: "foliospace://jobs", Name: "Jobs", Description: "Scan/import job list.", MimeType: "application/json"},
 		{URI: "foliospace://errors", Name: "Errors", Description: "Scan/import error list.", MimeType: "application/json"},
@@ -167,6 +170,8 @@ func (s *Server) readResource(ctx context.Context, raw json.RawMessage) (any, er
 		data, err = s.get(ctx, "/api/client/home")
 	case "foliospace://client/preferences":
 		data, err = s.get(ctx, "/api/client/preferences")
+	case "foliospace://settings/scan":
+		data, err = s.get(ctx, "/api/settings/scan")
 	case "foliospace://libraries":
 		data, err = s.get(ctx, "/api/libraries")
 	case "foliospace://jobs":
@@ -227,6 +232,10 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, error)
 		data, err = s.get(ctx, "/api/client/preferences")
 	case "foliospace.save_preferences":
 		data, err = s.put(ctx, "/api/client/preferences", params.Arguments)
+	case "foliospace.get_scan_settings":
+		data, err = s.get(ctx, "/api/settings/scan")
+	case "foliospace.save_scan_settings":
+		data, err = s.put(ctx, "/api/settings/scan", params.Arguments)
 	case "foliospace.get_private_state":
 		data, err = s.get(ctx, fmt.Sprintf("/api/client/books/%d/private-state", intArg(params.Arguments, "bookId")))
 	case "foliospace.save_private_state":

@@ -1602,7 +1602,7 @@ export function App() {
         <div className="authOverlay setupOverlay" role="dialog" aria-modal="true" aria-labelledby="setup-title">
           <form className="authPanel setupPanel" onSubmit={submitSetup}>
             <div>
-              <h1 id="setup-title">FolioSpace Library 0.8 Setup</h1>
+              <h1 id="setup-title">FolioSpace Library 0.82 Setup</h1>
               <small>
                 {setupStatus?.hasLibraries
                   ? "设置访问密钥，沿用当前数据库里的资源目录。"

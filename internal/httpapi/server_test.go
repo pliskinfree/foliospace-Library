@@ -228,7 +228,11 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	putJSON(t, ts.URL+"/api/books/"+itoa(cbzBookID)+"/progress", `{"pageIndex":1,"progressFraction":0.5}`)
 
 	infoBody := get(t, ts.URL+"/api/client/info")
-	if !strings.Contains(infoBody, `"apiVersion":"v1"`) || !strings.Contains(infoBody, `"epub"`) {
+	if !strings.Contains(infoBody, `"apiVersion":"v1"`) ||
+		!strings.Contains(infoBody, `"epub"`) ||
+		!strings.Contains(infoBody, `"pdf"`) ||
+		!strings.Contains(infoBody, `"pdfPageLayout":true`) ||
+		!strings.Contains(infoBody, `"scanSettings":true`) {
 		t.Fatalf("client info response %q does not include v1 capabilities", infoBody)
 	}
 
