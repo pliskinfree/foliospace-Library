@@ -1,6 +1,9 @@
 package service
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,6 +26,23 @@ type Service struct {
 	configDir string
 }
 
+const adminTokenHashSetting = "admin_token_sha256"
+
+type SetupStatus struct {
+	Initialized     bool                    `json:"initialized"`
+	AuthEnabled     bool                    `json:"authEnabled"`
+	HasLibraries    bool                    `json:"hasLibraries"`
+	TokenConfigured bool                    `json:"tokenConfigured"`
+	DirectoryRoots  []domain.DirectoryEntry `json:"directoryRoots"`
+}
+
+type SetupInput struct {
+	Token     string `json:"token"`
+	Name      string `json:"name"`
+	RootPath  string `json:"rootPath"`
+	AssetType string `json:"assetType"`
+}
+
 func New(store *store.Store) *Service {
 	return NewWithConfig(store, "")
 }
@@ -39,6 +59,71 @@ func (s *Service) CreateLibrary(name string, rootPath string) (domain.Library, e
 	return s.CreateLibraryWithType(name, rootPath, "mixed")
 }
 
+func (s *Service) SetupStatus(envTokenConfigured bool) (SetupStatus, error) {
+	libraries, err := s.ListLibraries()
+	if err != nil {
+		return SetupStatus{}, err
+	}
+	roots, err := s.DirectoryRoots()
+	if err != nil {
+		return SetupStatus{}, err
+	}
+	tokenConfigured := envTokenConfigured || s.AdminTokenConfigured()
+	hasLibraries := len(libraries) > 0
+	return SetupStatus{
+		Initialized:     tokenConfigured && hasLibraries,
+		AuthEnabled:     tokenConfigured,
+		HasLibraries:    hasLibraries,
+		TokenConfigured: tokenConfigured,
+		DirectoryRoots:  roots,
+	}, nil
+}
+
+func (s *Service) InitializeSetup(input SetupInput, tokenAlreadyConfigured bool) (domain.Library, error) {
+	token := strings.TrimSpace(input.Token)
+	if token == "" && !tokenAlreadyConfigured {
+		return domain.Library{}, fmt.Errorf("access token is required")
+	}
+	if token != "" {
+		if err := s.SetAdminToken(token); err != nil {
+			return domain.Library{}, err
+		}
+	}
+	if strings.TrimSpace(input.RootPath) == "" {
+		libraries, err := s.ListLibraries()
+		if err != nil {
+			return domain.Library{}, err
+		}
+		if len(libraries) > 0 {
+			return libraries[0], nil
+		}
+	}
+	return s.CreateLibraryWithType(input.Name, input.RootPath, input.AssetType)
+}
+
+func (s *Service) AdminTokenConfigured() bool {
+	hash, err := s.store.Setting(adminTokenHashSetting)
+	return err == nil && strings.TrimSpace(hash) != ""
+}
+
+func (s *Service) SetAdminToken(token string) error {
+	token = strings.TrimSpace(token)
+	if len(token) < 8 {
+		return fmt.Errorf("access token must be at least 8 characters")
+	}
+	sum := sha256.Sum256([]byte(token))
+	return s.store.UpsertSetting(adminTokenHashSetting, hex.EncodeToString(sum[:]))
+}
+
+func (s *Service) VerifyAdminToken(token string) bool {
+	hash, err := s.store.Setting(adminTokenHashSetting)
+	if err != nil || strings.TrimSpace(hash) == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(hash)), []byte(hex.EncodeToString(sum[:]))) == 1
+}
+
 func (s *Service) CreateLibraryWithType(name string, rootPath string, assetType string) (domain.Library, error) {
 	name = strings.TrimSpace(name)
 	rootPath = strings.TrimSpace(rootPath)
@@ -53,7 +138,7 @@ func (s *Service) CreateLibraryWithType(name string, rootPath string, assetType 
 
 func (s *Service) ListDirectories(path string) (domain.DirectoryListing, error) {
 	path = strings.TrimSpace(path)
-	roots, err := s.directoryRoots()
+	roots, err := s.DirectoryRoots()
 	if err != nil {
 		return domain.DirectoryListing{}, err
 	}
@@ -104,7 +189,7 @@ func (s *Service) ListDirectories(path string) (domain.DirectoryListing, error) 
 	return domain.DirectoryListing{Path: path, Parent: parent, Entries: entries}, nil
 }
 
-func (s *Service) directoryRoots() ([]domain.DirectoryEntry, error) {
+func (s *Service) DirectoryRoots() ([]domain.DirectoryEntry, error) {
 	candidates := []string{os.Getenv("FOLIOSPACE_LIBRARY_DIR")}
 	candidates = append(candidates, strings.Split(os.Getenv("FOLIOSPACE_DIRECTORY_ROOTS"), ",")...)
 	candidates = append(candidates, "/library", "/games")

@@ -26,6 +26,7 @@ type Options struct {
 }
 
 const authCookieName = "foliospace_api_token"
+const serviceVersion = "0.8"
 
 func New(service *service.Service, static http.Handler) *Server {
 	return NewWithOptions(service, static, Options{})
@@ -40,6 +41,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("/api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("/api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("/api/setup/status", s.handleSetupStatus)
+	mux.HandleFunc("/api/setup/initialize", s.handleSetupInitialize)
+	mux.HandleFunc("/api/config/directory-roots", s.handleDirectoryRoots)
 	mux.HandleFunc("/api/client/info", s.handleClientInfo)
 	mux.HandleFunc("/api/client/preferences", s.handleClientPreferences)
 	mux.HandleFunc("/api/client/home", s.handleClientHome)
@@ -81,7 +85,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 }
 
 func (s *Server) isPublicAuthPath(path string) bool {
-	return path == "/api/auth/status" || path == "/api/auth/check" || path == "/api/auth/logout"
+	return path == "/api/auth/status" ||
+		path == "/api/auth/check" ||
+		path == "/api/auth/logout" ||
+		path == "/api/setup/status" ||
+		path == "/api/setup/initialize" ||
+		path == "/api/config/directory-roots"
 }
 
 func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +98,56 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, map[string]bool{"enabled": strings.TrimSpace(s.options.APIToken) != ""})
+	writeJSON(w, map[string]bool{"enabled": s.authEnabled()})
+}
+
+func (s *Server) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	status, err := s.service.SetupStatus(s.envTokenConfigured())
+	writeJSONOrError(w, status, err)
+}
+
+func (s *Server) handleSetupInitialize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	status, err := s.service.SetupStatus(s.envTokenConfigured())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if status.Initialized {
+		writeError(w, http.StatusConflict, errors.New("setup is already initialized"))
+		return
+	}
+	if status.TokenConfigured && !s.requestAuthorized(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="FolioSpace Library"`)
+		writeError(w, http.StatusUnauthorized, errors.New("missing or invalid bearer token"))
+		return
+	}
+	var req service.SetupInput
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if s.envTokenConfigured() {
+		req.Token = ""
+	}
+	lib, err := s.service.InitializeSetup(req, status.TokenConfigured)
+	writeJSONOrError(w, lib, err)
+}
+
+func (s *Server) handleDirectoryRoots(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	roots, err := s.service.DirectoryRoots()
+	writeJSONOrError(w, map[string]any{"roots": roots}, err)
 }
 
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +196,7 @@ func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, clientInfoResponse{
 		ServiceName:      "FolioSpace Library",
+		ServiceVersion:   serviceVersion,
 		APIVersion:       "v1",
 		SupportedFormats: []string{"cbz", "zip", "epub", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"},
 		Capabilities: clientCapabilities{
@@ -151,7 +210,8 @@ func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
 			PrivateState:      true,
 			Search:            true,
 			Preferences:       true,
-			BearerTokenAuth:   s.options.APIToken != "",
+			BearerTokenAuth:   s.authEnabled(),
+			SetupWizard:       true,
 			ScannerJobEvents:  true,
 			ScannerJobControl: true,
 		},
@@ -398,7 +458,7 @@ func (s *Server) authorizeClient(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) authorizeAPI(w http.ResponseWriter, r *http.Request) bool {
-	if s.validToken(bearerToken(r.Header.Get("Authorization"))) || s.validCookie(r) {
+	if !s.authEnabled() || s.requestAuthorized(r) {
 		return true
 	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="FolioSpace Library"`)
@@ -406,12 +466,28 @@ func (s *Server) authorizeAPI(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func (s *Server) requestAuthorized(r *http.Request) bool {
+	return s.validToken(bearerToken(r.Header.Get("Authorization"))) || s.validCookie(r)
+}
+
+func (s *Server) authEnabled() bool {
+	return s.envTokenConfigured() || s.service.AdminTokenConfigured()
+}
+
+func (s *Server) envTokenConfigured() bool {
+	return strings.TrimSpace(s.options.APIToken) != ""
+}
+
 func (s *Server) validToken(value string) bool {
 	token := strings.TrimSpace(s.options.APIToken)
-	if token == "" {
-		return true
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1
+	if token != "" {
+		return subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1
+	}
+	return s.service.VerifyAdminToken(value)
 }
 
 func bearerToken(header string) string {
@@ -431,7 +507,7 @@ func (s *Server) validCookie(r *http.Request) bool {
 }
 
 func (s *Server) setAuthCookie(w http.ResponseWriter, token string) {
-	if strings.TrimSpace(s.options.APIToken) == "" {
+	if !s.authEnabled() {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
@@ -1012,6 +1088,7 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 type clientInfoResponse struct {
 	ServiceName      string             `json:"serviceName"`
+	ServiceVersion   string             `json:"serviceVersion"`
 	APIVersion       string             `json:"apiVersion"`
 	SupportedFormats []string           `json:"supportedFormats"`
 	Capabilities     clientCapabilities `json:"capabilities"`
@@ -1029,6 +1106,7 @@ type clientCapabilities struct {
 	Search            bool `json:"search"`
 	Preferences       bool `json:"preferences"`
 	BearerTokenAuth   bool `json:"bearerTokenAuth"`
+	SetupWizard       bool `json:"setupWizard"`
 	ScannerJobEvents  bool `json:"scannerJobEvents"`
 	ScannerJobControl bool `json:"scannerJobControl"`
 }

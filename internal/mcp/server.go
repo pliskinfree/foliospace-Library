@@ -51,6 +51,8 @@ type Resource struct {
 	MimeType    string `json:"mimeType,omitempty"`
 }
 
+const serviceVersion = "0.8"
+
 func New(baseURL string, token string) *Server {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -79,7 +81,7 @@ func (s *Server) Handle(ctx context.Context, req Request) Response {
 			},
 			"serverInfo": map[string]any{
 				"name":    "foliospace-library",
-				"version": "0.1.0",
+				"version": serviceVersion,
 			},
 		})
 	case "tools/list":

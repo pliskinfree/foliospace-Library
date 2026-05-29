@@ -191,6 +191,21 @@ export type AuthStatus = {
   enabled: boolean;
 };
 
+export type SetupStatus = {
+  initialized: boolean;
+  authEnabled: boolean;
+  hasLibraries: boolean;
+  tokenConfigured: boolean;
+  directoryRoots: DirectoryEntry[];
+};
+
+export type SetupInput = {
+  token: string;
+  name: string;
+  rootPath: string;
+  assetType: Library["assetType"];
+};
+
 const authTokenKey = "foliospace_api_token";
 
 export function getAuthToken() {
@@ -245,6 +260,13 @@ export const api = {
       body: JSON.stringify({ token }),
     }),
   authLogout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+  setupStatus: () => request<SetupStatus>("/api/setup/status"),
+  setupInitialize: (input: SetupInput) =>
+    request<Library>("/api/setup/initialize", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  directoryRoots: () => request<{ roots: DirectoryEntry[] }>("/api/config/directory-roots"),
   clientPreferences: () => request<ClientPreferences>("/api/client/preferences"),
   saveClientPreferences: (preferences: ClientPreferences) =>
     request<ClientPreferences>("/api/client/preferences", {

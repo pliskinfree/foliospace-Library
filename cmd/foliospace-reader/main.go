@@ -21,9 +21,6 @@ func main() {
 	defer conn.Close()
 
 	appStore := store.New(conn)
-	if _, err := appStore.CreateLibrary("Library", cfg.LibraryDir); err != nil {
-		log.Fatal(err)
-	}
 
 	api := httpapi.NewWithOptions(service.NewWithConfig(appStore, cfg.ConfigDir), http.FileServer(http.Dir("web/dist")), httpapi.Options{APIToken: cfg.APIToken})
 

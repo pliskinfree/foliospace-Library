@@ -6,10 +6,13 @@ It is not trying to become a complete Plex, Jellyfin, or Immich replacement. The
 
 The current implementation still starts from the FolioSpace Reader codebase and keeps the existing reading MVP operational while the model evolves toward `Asset` / `LibraryItem`.
 
+Current release branch: `0.8`.
+
 ## Runtime Layout
 
 - `/config`: SQLite database, generated covers/thumbnails, runtime cache.
 - `/library`: read-only mounted asset library root.
+- `/books`, `/games`: optional read-only roots used by the default Docker compose example.
 - `8080`: web UI and HTTP API.
 
 Recommended NAS config root:
@@ -34,17 +37,25 @@ go run ./cmd/foliospace-reader
 ```bash
 FOLIOSPACE_CONFIG_DIR=/config
 FOLIOSPACE_LIBRARY_DIR=/library
+FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games
 FOLIOSPACE_ADDR=:8080
 FOLIOSPACE_API_TOKEN=
+FOLIOSPACE_SCAN_WORKERS=2
 ```
 
-Set `FOLIOSPACE_API_TOKEN` to require API authentication. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
+Set `FOLIOSPACE_API_TOKEN` to require API authentication from environment variables. If it is empty, release `0.8` can create the first access token from the web setup page and stores only a SHA-256 token hash in SQLite. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
 
 Authentication helpers:
 
 - `GET /api/auth/status`: returns whether token auth is enabled.
 - `POST /api/auth/check`: accepts `{"token":"..."}` and returns `{"ok":true}` for a valid token.
 - `POST /api/auth/logout`: clears the web auth cookie.
+
+First-run setup helpers:
+
+- `GET /api/setup/status`: returns whether the service has an access token and at least one library.
+- `POST /api/setup/initialize`: creates the first access token and first library.
+- `GET /api/config/directory-roots`: returns container-visible root directories for the setup picker.
 
 ## Client API v1
 
@@ -84,20 +95,23 @@ ROM support is for indexing and launching user-owned local content. FolioSpace L
 For local verification:
 
 ```bash
-mkdir -p data/config data/library
+mkdir -p data/config data/library data/books data/games
 docker compose up --build
 ```
 
-For a NAS deployment, mount your real library as read-only:
+For a NAS deployment, mount your real libraries as read-only:
 
 ```bash
 docker run -p 8080:8080 \
   -v /volume1/docker/foliospace-library/config:/config \
   -v /volume2/ComicCenter:/library:ro \
-  foliospace-library:dev
+  -v /volume2/Books:/books:ro \
+  -v /volume2/GameROMS:/games:ro \
+  -e FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games \
+  foliospace-library:0.8
 ```
 
-Open `http://localhost:8080`, scan the configured library, then browse collections and books.
+Open `http://localhost:8080`. On a fresh `/config`, the setup page asks for an access key and lets you choose a container path such as `/library`, `/books`, or `/games`. If a directory is missing from the setup page, add a Docker volume mapping first; FolioSpace Library can only browse paths visible inside the container.
 
 ## Current MVP Support
 

@@ -555,6 +555,128 @@ func TestAPICreatesGameTypedLibraryForZipROMSets(t *testing.T) {
 	}
 }
 
+func TestSetupStatusAndInitializeStoresTokenAndLibrary(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	statusBody := get(t, ts.URL+"/api/setup/status")
+	if !strings.Contains(statusBody, `"initialized":false`) ||
+		!strings.Contains(statusBody, `"authEnabled":false`) ||
+		!strings.Contains(statusBody, root) {
+		t.Fatalf("setup status = %q, want uninitialized status with directory roots", statusBody)
+	}
+
+	initBody := postJSONBody(t, ts.URL+"/api/setup/initialize", `{"token":"secret-token","name":"Books","rootPath":"`+root+`","assetType":"book"}`)
+	if !strings.Contains(initBody, `"name":"Books"`) || !strings.Contains(initBody, `"assetType":"book"`) {
+		t.Fatalf("initialize response = %q, want created book library", initBody)
+	}
+
+	authBody := get(t, ts.URL+"/api/auth/status")
+	if !strings.Contains(authBody, `"enabled":true`) {
+		t.Fatalf("auth status = %q, want DB token enabled", authBody)
+	}
+	resp, err := http.Get(ts.URL + "/api/collections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated collections status = %d, want 401", resp.StatusCode)
+	}
+	collectionsBody := authGet(t, ts.URL+"/api/collections", "secret-token")
+	if strings.Contains(collectionsBody, "Unauthorized") {
+		t.Fatalf("authorized collections response = %q", collectionsBody)
+	}
+}
+
+func TestSetupInitializeRequiresEnvTokenWhenConfigured(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(NewWithOptions(service.New(st), nil, Options{APIToken: "env-secret"}).Routes())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/setup/initialize", "application/json", strings.NewReader(`{"name":"Books","rootPath":"`+root+`","assetType":"book"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated initialize status = %d, want 401", resp.StatusCode)
+	}
+
+	body := postJSONBodyWithToken(t, ts.URL+"/api/setup/initialize", `{"name":"Books","rootPath":"`+root+`","assetType":"book"}`, "env-secret")
+	if !strings.Contains(body, `"name":"Books"`) {
+		t.Fatalf("authenticated initialize response = %q, want created library", body)
+	}
+}
+
+func TestSetupInitializeCanSecureExistingLibrary(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	svc := service.New(st)
+	ts := httptest.NewServer(New(svc, nil).Routes())
+	defer ts.Close()
+	existing, err := svc.CreateLibraryWithType("Existing", root, "book")
+	if err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+
+	statusBody := get(t, ts.URL+"/api/setup/status")
+	if !strings.Contains(statusBody, `"initialized":false`) ||
+		!strings.Contains(statusBody, `"hasLibraries":true`) ||
+		!strings.Contains(statusBody, `"tokenConfigured":false`) {
+		t.Fatalf("unexpected setup status: %s", statusBody)
+	}
+
+	body := postJSONBody(t, ts.URL+"/api/setup/initialize", `{"token":"secret-token"}`)
+	if !strings.Contains(body, `"id":`+itoa(existing.ID)) || !strings.Contains(body, `"name":"Existing"`) {
+		t.Fatalf("initialize existing response = %q, want existing library", body)
+	}
+
+	authBody := get(t, ts.URL+"/api/auth/status")
+	if !strings.Contains(authBody, `"enabled":true`) {
+		t.Fatalf("expected auth enabled after securing existing library, got %s", authBody)
+	}
+}
+
+func TestConfigDirectoryRootsListsContainerRoots(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	body := get(t, ts.URL+"/api/config/directory-roots")
+	if !strings.Contains(body, `"roots"`) || !strings.Contains(body, root) {
+		t.Fatalf("directory roots response = %q, want configured root", body)
+	}
+}
+
 func TestAPIRequiresBearerTokenWhenConfigured(t *testing.T) {
 	conn, err := db.Open(t.TempDir())
 	if err != nil {
@@ -672,6 +794,29 @@ func post(t *testing.T, url string, body string) {
 func postJSONBody(t *testing.T, url string, body string) string {
 	t.Helper()
 	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode >= 400 {
+		t.Fatalf("POST %s status %d: %s", url, resp.StatusCode, data)
+	}
+	return string(data)
+}
+
+func postJSONBodyWithToken(t *testing.T, url string, body string, token string) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

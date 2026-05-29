@@ -67,6 +67,74 @@ Public. Clears the web auth cookie.
 }
 ```
 
+## First-Run Setup
+
+Release `0.8` supports a web-first setup flow for Docker deployments. A fresh `/config` starts uninitialized until it has an access token and at least one configured library.
+
+Environment variable token auth still has priority. If `FOLIOSPACE_API_TOKEN` is set, `POST /api/setup/initialize` must include that token as a bearer token and the setup page treats the token field as the existing deployment token. If `FOLIOSPACE_API_TOKEN` is empty, setup stores the first user-provided token as a SHA-256 hash in SQLite.
+
+### `GET /api/setup/status`
+
+Returns setup state and container-visible directory roots.
+
+```json
+{
+  "initialized": false,
+  "authEnabled": false,
+  "hasLibraries": false,
+  "tokenConfigured": false,
+  "directoryRoots": [
+    { "name": "library", "path": "/library" },
+    { "name": "books", "path": "/books" },
+    { "name": "games", "path": "/games" }
+  ]
+}
+```
+
+`initialized` is true only when an access token is configured and at least one library exists.
+
+### `POST /api/setup/initialize`
+
+Creates the first library and, when no environment token is configured, saves the first access token.
+
+Request:
+
+```json
+{
+  "token": "change-me-long-token",
+  "name": "Books",
+  "rootPath": "/books",
+  "assetType": "book"
+}
+```
+
+`assetType` can be `mixed`, `book`, `comic`, or `game`.
+
+Response is the created library:
+
+```json
+{
+  "id": 1,
+  "name": "Books",
+  "rootPath": "/books",
+  "assetType": "book"
+}
+```
+
+### `GET /api/config/directory-roots`
+
+Returns the container-visible roots used by the setup page and directory picker:
+
+```json
+{
+  "roots": [
+    { "name": "library", "path": "/library" }
+  ]
+}
+```
+
+This endpoint reports container paths, not host/NAS paths. Docker volume mappings decide which host paths are visible.
+
 ## Recommended Native Client Flow
 
 1. Call `GET /api/auth/status`.
@@ -92,6 +160,7 @@ Response:
 ```json
 {
   "serviceName": "FolioSpace Library",
+  "serviceVersion": "0.8",
   "apiVersion": "v1",
   "supportedFormats": ["cbz", "zip", "epub", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"],
   "capabilities": {
@@ -106,7 +175,9 @@ Response:
     "search": true,
     "preferences": true,
     "bearerTokenAuth": true,
-    "scannerJobEvents": true
+    "setupWizard": true,
+    "scannerJobEvents": true,
+    "scannerJobControl": true
   }
 }
 ```

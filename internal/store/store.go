@@ -18,6 +18,22 @@ func New(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
+func (s *Store) Setting(key string) (string, error) {
+	row := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, strings.TrimSpace(key))
+	var value string
+	if err := row.Scan(&value); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func (s *Store) UpsertSetting(key string, value string) error {
+	_, err := s.db.Exec(`INSERT INTO app_settings(key, value) VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		strings.TrimSpace(key), strings.TrimSpace(value))
+	return err
+}
+
 func (s *Store) CreateLibrary(name string, rootPath string) (domain.Library, error) {
 	return s.CreateLibraryWithType(name, rootPath, "mixed")
 }

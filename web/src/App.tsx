@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, TouchEvent } from "react";
-import { api, Book, BookPrivateState, clearAuthToken, ClientPreferences, DirectoryListing, EpubManifest, FileError, GameAsset, getAuthToken, JobEvent, Library, Page, ScanJob, Series, setAuthToken } from "./api";
+import { api, Book, BookPrivateState, clearAuthToken, ClientPreferences, DirectoryEntry, DirectoryListing, EpubManifest, FileError, GameAsset, getAuthToken, JobEvent, Library, Page, ScanJob, Series, setAuthToken, SetupStatus } from "./api";
 
 type View = "library" | "reader" | "jobs" | "errors";
 type ReaderPageMode = "single" | "double";
@@ -47,6 +47,13 @@ export function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authInput, setAuthInput] = useState("");
   const [authError, setAuthError] = useState("");
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [setupRequired, setSetupRequired] = useState(false);
+  const [setupToken, setSetupToken] = useState("");
+  const [setupName, setSetupName] = useState("");
+  const [setupPath, setSetupPath] = useState("");
+  const [setupAssetType, setSetupAssetType] = useState<LibraryAssetType>("mixed");
+  const [setupError, setSetupError] = useState("");
   const [activeTask, setActiveTask] = useState<string | null>(null);
   const [readerLoadState, setReaderLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [readerRetryKey, setReaderRetryKey] = useState(0);
@@ -125,6 +132,19 @@ export function App() {
   useEffect(() => {
     async function bootstrap() {
       try {
+        const setup = await api.setupStatus();
+        setSetupStatus(setup);
+        if (!setup.initialized) {
+          setSetupRequired(true);
+          setAuthEnabled(setup.authEnabled);
+          const firstRoot = setup.directoryRoots[0];
+          if (firstRoot) {
+            setSetupPath(firstRoot.path);
+            setSetupName(firstRoot.name);
+          }
+          setStatus("Setup required");
+          return;
+        }
         const auth = await api.authStatus();
         setAuthEnabled(auth.enabled);
         const storedToken = getAuthToken();
@@ -241,6 +261,46 @@ export function App() {
     } finally {
       setActiveTask(null);
       setAuthChecked(true);
+    }
+  }
+
+  async function submitSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = setupToken.trim();
+    if (!setupPath.trim() && !setupStatus?.hasLibraries) return;
+    if (!setupStatus?.authEnabled && !token) {
+      setSetupError("Access token is required");
+      return;
+    }
+    setSetupError("");
+    setActiveTask("Initializing FolioSpace Library");
+    try {
+      if (setupStatus?.authEnabled && token) {
+        setAuthToken(token);
+      }
+      await api.setupInitialize({
+        token: setupStatus?.authEnabled ? "" : token,
+        name: setupName,
+        rootPath: setupPath,
+        assetType: setupAssetType,
+      });
+      if (!setupStatus?.authEnabled) {
+        setAuthToken(token);
+      }
+      setSetupRequired(false);
+      setAuthRequired(false);
+      setAuthEnabled(true);
+      setSetupToken("");
+      setStatus("Ready");
+      await refreshAll(true);
+    } catch (error) {
+      if (setupStatus?.authEnabled) {
+        clearAuthToken();
+      }
+      setSetupError(error instanceof Error ? error.message : "Setup failed");
+    } finally {
+      setAuthChecked(true);
+      setActiveTask(null);
     }
   }
 
@@ -411,6 +471,13 @@ export function App() {
       if (name) setNewLibraryName(name);
     }
     setDirectoryPickerOpen(false);
+  }
+
+  function selectSetupRoot(root: DirectoryEntry) {
+    setSetupPath(root.path);
+    if (!setupName.trim()) {
+      setSetupName(root.name);
+    }
   }
 
   async function openJob(job: ScanJob) {
@@ -1473,6 +1540,69 @@ export function App() {
           </section>
         )}
       </section>
+      {setupRequired && (
+        <div className="authOverlay setupOverlay" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+          <form className="authPanel setupPanel" onSubmit={submitSetup}>
+            <div>
+              <h1 id="setup-title">FolioSpace Library 0.8 Setup</h1>
+              <small>
+                {setupStatus?.hasLibraries
+                  ? "设置访问密钥，沿用当前数据库里的资源目录。"
+                  : "设置访问密钥，并选择 Docker 容器内可访问的第一个资源目录。"}
+              </small>
+            </div>
+            <label>
+              <span>{setupStatus?.authEnabled ? "当前访问密钥" : "新访问密钥"}</span>
+              <input
+                autoFocus
+                type="password"
+                value={setupToken}
+                onChange={(event) => setSetupToken(event.target.value)}
+                placeholder={setupStatus?.authEnabled ? "Existing access token" : "At least 8 characters"}
+              />
+            </label>
+            <label>
+              <span>资源目录名称</span>
+              <input value={setupName} onChange={(event) => setSetupName(event.target.value)} placeholder="Books / Comics / GameROMS" />
+            </label>
+            <label>
+              <span>容器内路径</span>
+              <input value={setupPath} onChange={(event) => setSetupPath(event.target.value)} placeholder="/books" />
+            </label>
+            {setupStatus?.directoryRoots && setupStatus.directoryRoots.length > 0 && (
+              <div className="setupRootGrid">
+                {setupStatus.directoryRoots.map((root) => (
+                  <button
+                    type="button"
+                    key={root.path}
+                    className={setupPath === root.path ? "selected" : ""}
+                    onClick={() => selectSetupRoot(root)}
+                  >
+                    <strong>{root.name}</strong>
+                    <small>{root.path}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+            <label>
+              <span>资源类型</span>
+              <select value={setupAssetType} onChange={(event) => setSetupAssetType(event.target.value as LibraryAssetType)}>
+                <option value="mixed">{t.assetTypeMixed}</option>
+                <option value="comic">{t.assetTypeComic}</option>
+                <option value="book">{t.assetTypeBook}</option>
+                <option value="game">{t.assetTypeGame}</option>
+              </select>
+            </label>
+            <p className="setupHint">
+              如果没有看到 NAS 目录，请先在 Docker compose 里把宿主机路径挂载到容器路径，例如 <code>/volume2/Books:/books:ro</code>。
+            </p>
+            {setupError && <span className="authError">{setupError}</span>}
+            <button disabled={(!setupPath.trim() && !setupStatus?.hasLibraries) || !setupToken.trim()}>
+              {setupStatus?.hasLibraries ? "Save setup" : "Initialize"}
+            </button>
+          </form>
+        </div>
+      )}
       {(!authChecked || authRequired) && (
         <div className="authOverlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
           <form className="authPanel" onSubmit={submitAuth}>
