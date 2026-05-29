@@ -520,6 +520,32 @@ func TestClientAPIPreferences(t *testing.T) {
 	}
 }
 
+func TestScanSettingsAPI(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	defaultBody := get(t, ts.URL+"/api/settings/scan")
+	if !strings.Contains(defaultBody, `"scanWorkers":1`) {
+		t.Fatalf("default scan settings = %q, want one worker", defaultBody)
+	}
+
+	updatedBody := putJSONBody(t, ts.URL+"/api/settings/scan", `{"scanWorkers":99}`)
+	if !strings.Contains(updatedBody, `"scanWorkers":8`) {
+		t.Fatalf("updated scan settings = %q, want clamped workers", updatedBody)
+	}
+
+	savedBody := get(t, ts.URL+"/api/settings/scan")
+	if savedBody != updatedBody {
+		t.Fatalf("saved settings = %q, want %q", savedBody, updatedBody)
+	}
+}
+
 func TestAPICreatesGameTypedLibraryForZipROMSets(t *testing.T) {
 	root := t.TempDir()
 	makeZip(t, filepath.Join(root, "Arcade", "mslug.zip"), map[string]string{"mslug.rom": "rom"})

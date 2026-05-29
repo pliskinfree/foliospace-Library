@@ -22,7 +22,8 @@ import (
 )
 
 type Scanner struct {
-	store *store.Store
+	store       *store.Store
+	workerCount func() int
 }
 
 var (
@@ -31,7 +32,14 @@ var (
 )
 
 func New(store *store.Store) *Scanner {
-	return &Scanner{store: store}
+	return NewWithWorkerCount(store, scanWorkerCount)
+}
+
+func NewWithWorkerCount(store *store.Store, workerCount func() int) *Scanner {
+	if workerCount == nil {
+		workerCount = scanWorkerCount
+	}
+	return &Scanner{store: store, workerCount: workerCount}
 }
 
 func (s *Scanner) ScanLibrary(library domain.Library) (domain.ScanJob, error) {
@@ -57,7 +65,7 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 	_ = s.store.AddJobEvent(job.ID, "info", "scan started")
 	_ = s.store.AddJobEvent(job.ID, "info", "walking "+library.RootPath)
 
-	workers := scanWorkerCount()
+	workers := s.workerCount()
 	if workers > 1 {
 		return s.runScanJobConcurrent(library, job, workers)
 	}
@@ -461,6 +469,11 @@ func (s *Scanner) recordTaskError(libraryID int64, jobID int64, path string, cod
 
 func scanWorkerCount() int {
 	value := strings.TrimSpace(os.Getenv("FOLIOSPACE_SCAN_WORKERS"))
+	return NormalizeWorkerCount(value)
+}
+
+func NormalizeWorkerCount(value string) int {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return 1
 	}

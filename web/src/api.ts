@@ -197,6 +197,7 @@ export type SetupStatus = {
   hasLibraries: boolean;
   tokenConfigured: boolean;
   directoryRoots: DirectoryEntry[];
+  scanWorkers: number;
 };
 
 export type SetupInput = {
@@ -204,6 +205,11 @@ export type SetupInput = {
   name: string;
   rootPath: string;
   assetType: Library["assetType"];
+  scanWorkers?: number;
+};
+
+export type ScanSettings = {
+  scanWorkers: number;
 };
 
 const authTokenKey = "foliospace_api_token";
@@ -267,6 +273,12 @@ export const api = {
       body: JSON.stringify(input),
     }),
   directoryRoots: () => request<{ roots: DirectoryEntry[] }>("/api/config/directory-roots"),
+  scanSettings: () => request<ScanSettings>("/api/settings/scan"),
+  saveScanSettings: (settings: ScanSettings) =>
+    request<ScanSettings>("/api/settings/scan", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
   clientPreferences: () => request<ClientPreferences>("/api/client/preferences"),
   saveClientPreferences: (preferences: ClientPreferences) =>
     request<ClientPreferences>("/api/client/preferences", {

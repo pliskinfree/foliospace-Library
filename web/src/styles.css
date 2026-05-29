@@ -646,7 +646,8 @@ button:hover {
   background: #dfe7ea;
 }
 
-.searchCover img {
+.searchCover img,
+.searchCover .pdfCoverPreview {
   display: block;
   width: 100%;
   aspect-ratio: 3 / 4.15;
@@ -764,7 +765,8 @@ button:hover {
     transform 140ms ease;
 }
 
-.shelfCover img {
+.shelfCover img,
+.shelfCover .pdfCoverPreview {
   display: block;
   width: 100%;
   aspect-ratio: 3 / 4.15;
@@ -1116,11 +1118,18 @@ button.danger:hover {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(0, 0, 0, 0.08));
 }
 
-.coverFrame img {
+.coverFrame img,
+.coverFrame .pdfCoverPreview {
   display: block;
   width: 100%;
   aspect-ratio: 3 / 4.15;
   object-fit: cover;
+}
+
+.pdfCoverPreview {
+  pointer-events: none;
+  border: 0;
+  background: #fffaf0;
 }
 
 .coverBadge {
@@ -1455,6 +1464,46 @@ button.danger:hover {
   box-shadow: 0 12px 40px rgba(31, 42, 46, 0.14);
 }
 
+.pdfReader {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.pdfReader.single {
+  gap: 0;
+}
+
+.pdfReader canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 6px;
+  background: #ffffff;
+  box-shadow: 0 12px 40px rgba(31, 42, 46, 0.18);
+}
+
+.pdfReader.double canvas {
+  max-width: calc((100% - 18px) / 2);
+}
+
+.pdfReaderError {
+  position: absolute;
+  inset: auto 18px 18px;
+  z-index: 2;
+  border: 1px solid #f0c1bd;
+  border-radius: 8px;
+  background: #fff6f5;
+  color: #9f3028;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
 .epubFrame {
   position: relative;
   z-index: 1;
@@ -1619,6 +1668,25 @@ button.danger:hover {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.scanSettings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 140px) 28px auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #eef2f3;
+  padding: 0 0 12px;
+}
+
+.scanSettings small {
+  display: block;
+  margin-top: 3px;
+  color: #69777d;
+}
+
+.scanSettings input {
+  width: 100%;
 }
 
 .jobDetail {

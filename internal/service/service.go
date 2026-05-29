@@ -27,6 +27,7 @@ type Service struct {
 }
 
 const adminTokenHashSetting = "admin_token_sha256"
+const scanWorkersSetting = "scan_workers"
 
 type SetupStatus struct {
 	Initialized     bool                    `json:"initialized"`
@@ -34,13 +35,19 @@ type SetupStatus struct {
 	HasLibraries    bool                    `json:"hasLibraries"`
 	TokenConfigured bool                    `json:"tokenConfigured"`
 	DirectoryRoots  []domain.DirectoryEntry `json:"directoryRoots"`
+	ScanWorkers     int                     `json:"scanWorkers"`
 }
 
 type SetupInput struct {
-	Token     string `json:"token"`
-	Name      string `json:"name"`
-	RootPath  string `json:"rootPath"`
-	AssetType string `json:"assetType"`
+	Token       string `json:"token"`
+	Name        string `json:"name"`
+	RootPath    string `json:"rootPath"`
+	AssetType   string `json:"assetType"`
+	ScanWorkers int    `json:"scanWorkers"`
+}
+
+type ScanSettings struct {
+	ScanWorkers int `json:"scanWorkers"`
 }
 
 func New(store *store.Store) *Service {
@@ -49,8 +56,10 @@ func New(store *store.Store) *Service {
 
 func NewWithConfig(store *store.Store, configDir string) *Service {
 	return &Service{
-		store:     store,
-		scanner:   scanner.New(store),
+		store: store,
+		scanner: scanner.NewWithWorkerCount(store, func() int {
+			return scanWorkerCountFromStore(store)
+		}),
 		configDir: strings.TrimSpace(configDir),
 	}
 }
@@ -76,6 +85,7 @@ func (s *Service) SetupStatus(envTokenConfigured bool) (SetupStatus, error) {
 		HasLibraries:    hasLibraries,
 		TokenConfigured: tokenConfigured,
 		DirectoryRoots:  roots,
+		ScanWorkers:     s.ScanWorkerCount(),
 	}, nil
 }
 
@@ -89,6 +99,11 @@ func (s *Service) InitializeSetup(input SetupInput, tokenAlreadyConfigured bool)
 			return domain.Library{}, err
 		}
 	}
+	if input.ScanWorkers > 0 {
+		if err := s.SaveScanSettings(ScanSettings{ScanWorkers: input.ScanWorkers}); err != nil {
+			return domain.Library{}, err
+		}
+	}
 	if strings.TrimSpace(input.RootPath) == "" {
 		libraries, err := s.ListLibraries()
 		if err != nil {
@@ -99,6 +114,26 @@ func (s *Service) InitializeSetup(input SetupInput, tokenAlreadyConfigured bool)
 		}
 	}
 	return s.CreateLibraryWithType(input.Name, input.RootPath, input.AssetType)
+}
+
+func (s *Service) ScanSettings() ScanSettings {
+	return ScanSettings{ScanWorkers: s.ScanWorkerCount()}
+}
+
+func (s *Service) SaveScanSettings(settings ScanSettings) error {
+	workers := scanner.NormalizeWorkerCount(fmt.Sprintf("%d", settings.ScanWorkers))
+	return s.store.UpsertSetting(scanWorkersSetting, fmt.Sprintf("%d", workers))
+}
+
+func (s *Service) ScanWorkerCount() int {
+	return scanWorkerCountFromStore(s.store)
+}
+
+func scanWorkerCountFromStore(st *store.Store) int {
+	if value, err := st.Setting(scanWorkersSetting); err == nil && strings.TrimSpace(value) != "" {
+		return scanner.NormalizeWorkerCount(value)
+	}
+	return scanner.NormalizeWorkerCount(os.Getenv("FOLIOSPACE_SCAN_WORKERS"))
 }
 
 func (s *Service) AdminTokenConfigured() bool {

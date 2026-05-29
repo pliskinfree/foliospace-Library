@@ -256,7 +256,6 @@ func TestScanLibraryDisambiguatesDuplicateEPUBMetadataTitles(t *testing.T) {
 }
 
 func TestScanLibraryUsesConfiguredWorkerPool(t *testing.T) {
-	t.Setenv("FOLIOSPACE_SCAN_WORKERS", "2")
 	root := t.TempDir()
 	for i := 0; i < 6; i++ {
 		makeZip(t, filepath.Join(root, "Series A", "book"+string(rune('A'+i))+".cbz"), map[string]string{"001.jpg": "image"})
@@ -274,7 +273,7 @@ func TestScanLibraryUsesConfiguredWorkerPool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job, err := New(st).ScanLibrary(lib)
+	job, err := NewWithWorkerCount(st, func() int { return 2 }).ScanLibrary(lib)
 	if err != nil {
 		t.Fatal(err)
 	}

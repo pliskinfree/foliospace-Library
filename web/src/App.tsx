@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, MouseEvent, TouchEvent } from "react";
-import { api, Book, BookPrivateState, clearAuthToken, ClientPreferences, DirectoryEntry, DirectoryListing, EpubManifest, FileError, GameAsset, getAuthToken, JobEvent, Library, Page, ScanJob, Series, setAuthToken, SetupStatus } from "./api";
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
+import type { PDFDocumentProxy } from "pdfjs-dist";
+import pdfWorkerURL from "pdfjs-dist/build/pdf.worker.mjs?url";
+import { api, Book, BookPrivateState, clearAuthToken, ClientPreferences, DirectoryEntry, DirectoryListing, EpubManifest, FileError, GameAsset, getAuthToken, JobEvent, Library, Page, ScanJob, Series, setAuthToken, SetupStatus, ScanSettings } from "./api";
+
+GlobalWorkerOptions.workerSrc = pdfWorkerURL;
 
 type View = "library" | "reader" | "jobs" | "errors";
 type ReaderPageMode = "single" | "double";
@@ -53,7 +58,11 @@ export function App() {
   const [setupName, setSetupName] = useState("");
   const [setupPath, setSetupPath] = useState("");
   const [setupAssetType, setSetupAssetType] = useState<LibraryAssetType>("mixed");
+  const [setupScanWorkers, setSetupScanWorkers] = useState(2);
   const [setupError, setSetupError] = useState("");
+  const [scanSettings, setScanSettings] = useState<ScanSettings>({ scanWorkers: 1 });
+  const [scanWorkerDraft, setScanWorkerDraft] = useState(1);
+  const [scanSettingsSaving, setScanSettingsSaving] = useState(false);
   const [activeTask, setActiveTask] = useState<string | null>(null);
   const [readerLoadState, setReaderLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [readerRetryKey, setReaderRetryKey] = useState(0);
@@ -65,6 +74,7 @@ export function App() {
   const [epubPagePosition, setEpubPagePosition] = useState(0);
   const [epubPageCount, setEpubPageCount] = useState(1);
   const [epubTocOpen, setEpubTocOpen] = useState(false);
+  const [pdfPageCount, setPdfPageCount] = useState(1);
   const [newLibraryName, setNewLibraryName] = useState("");
   const [newLibraryPath, setNewLibraryPath] = useState("");
   const [newLibraryAssetType, setNewLibraryAssetType] = useState<LibraryAssetType>("mixed");
@@ -101,8 +111,9 @@ export function App() {
     if (showProgress) {
       setActiveTask("Refreshing library");
     }
-    const [preferences, nextLibraries, nextSeries, nextJobs, nextErrors, nextContinueBooks, nextRecentBooks, nextFavoriteBooks, nextWantBooks, nextGameShelf] = await Promise.all([
+    const [preferences, nextScanSettings, nextLibraries, nextSeries, nextJobs, nextErrors, nextContinueBooks, nextRecentBooks, nextFavoriteBooks, nextWantBooks, nextGameShelf] = await Promise.all([
       api.clientPreferences(),
+      api.scanSettings(),
       api.libraries(),
       api.series(),
       api.jobs(),
@@ -115,6 +126,8 @@ export function App() {
     ]);
     applyClientPreferences(preferences);
     preferencesLoaded.current = true;
+    setScanSettings(nextScanSettings);
+    setScanWorkerDraft(nextScanSettings.scanWorkers);
     setLibraries(arrayOrEmpty(nextLibraries));
     setSeries(arrayOrEmpty(nextSeries));
     setJobs(arrayOrEmpty(nextJobs));
@@ -137,6 +150,7 @@ export function App() {
         if (!setup.initialized) {
           setSetupRequired(true);
           setAuthEnabled(setup.authEnabled);
+          setSetupScanWorkers(setup.scanWorkers || 2);
           const firstRoot = setup.directoryRoots[0];
           if (firstRoot) {
             setSetupPath(firstRoot.path);
@@ -283,6 +297,7 @@ export function App() {
         name: setupName,
         rootPath: setupPath,
         assetType: setupAssetType,
+        scanWorkers: setupScanWorkers,
       });
       if (!setupStatus?.authEnabled) {
         setAuthToken(token);
@@ -301,6 +316,21 @@ export function App() {
     } finally {
       setAuthChecked(true);
       setActiveTask(null);
+    }
+  }
+
+  async function saveScanSettings() {
+    const nextWorkers = clampScanWorkers(scanWorkerDraft);
+    setScanSettingsSaving(true);
+    try {
+      const saved = await api.saveScanSettings({ scanWorkers: nextWorkers });
+      setScanSettings(saved);
+      setScanWorkerDraft(saved.scanWorkers);
+      setStatus(t.scanWorkersSaved(saved.scanWorkers));
+    } catch (error) {
+      handleAPIError(error);
+    } finally {
+      setScanSettingsSaving(false);
     }
   }
 
@@ -347,19 +377,20 @@ export function App() {
     if (!selectedBook) return;
     if (selectedBook.format === "epub") return;
 
+    const totalPages = selectedBook.format === "pdf" ? pdfPageCount : pages.length;
     const timer = window.setTimeout(() => {
       api
         .progressDetail(
           selectedBook.id,
           pageIndex,
           "",
-          pages.length > 1 ? pageIndex / (pages.length - 1) : 0,
+          totalPages > 1 ? pageIndex / (totalPages - 1) : 0,
         )
         .catch(() => undefined);
     }, 450);
 
     return () => window.clearTimeout(timer);
-  }, [selectedBook, pageIndex, pages.length]);
+  }, [selectedBook, pageIndex, pages.length, pdfPageCount]);
 
   useEffect(() => {
     if (!selectedBook || selectedBook.format !== "epub") return;
@@ -588,6 +619,7 @@ export function App() {
     setDisplayedPageIndex(0);
     setEpubPagePosition(0);
     setEpubPageCount(1);
+    setPdfPageCount(1);
     setEpubTocOpen(false);
     setReaderLoadState("loading");
     try {
@@ -603,9 +635,10 @@ export function App() {
         setReaderLoadState("ready");
       } else {
         const progress = await api.readProgress(book.id);
-        const restoredPage = Math.max(0, Math.min(progress.pageIndex, Math.max(0, nextPages.length - 1)));
+        const restoredPage = book.format === "pdf" ? Math.max(0, progress.pageIndex) : Math.max(0, Math.min(progress.pageIndex, Math.max(0, nextPages.length - 1)));
         setPageIndex(restoredPage);
         setDisplayedPageIndex(restoredPage);
+        setReaderLoadState("ready");
       }
       setSelectedBook(book);
       setView("reader");
@@ -642,7 +675,8 @@ export function App() {
   }
 
   async function setReaderPage(book: Book, nextIndex: number) {
-    const clamped = Math.max(0, Math.min(nextIndex, Math.max(0, pages.length - 1)));
+    const totalPages = book.format === "pdf" ? pdfPageCount : pages.length;
+    const clamped = Math.max(0, Math.min(nextIndex, Math.max(0, totalPages - 1)));
     if (book.format === "epub") {
       setEpubPagePosition(0);
       setEpubPageCount(1);
@@ -707,7 +741,7 @@ export function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [view, selectedBook, pageIndex, pages.length, readerPageMode, epubPagePosition, epubPageCount]);
+  }, [view, selectedBook, pageIndex, pages.length, pdfPageCount, readerPageMode, epubPagePosition, epubPageCount]);
 
   useEffect(() => {
     if (view !== "reader" || !selectedBook) return;
@@ -729,7 +763,7 @@ export function App() {
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("touchend", onTouchEnd);
     };
-  }, [view, selectedBook, pageIndex, pages.length, readerPageMode, epubPagePosition, epubPageCount]);
+  }, [view, selectedBook, pageIndex, pages.length, pdfPageCount, readerPageMode, epubPagePosition, epubPageCount]);
 
   function preloadPage(bookID: number, index: number) {
     const src = `/api/books/${bookID}/pages/${index}`;
@@ -1006,7 +1040,7 @@ export function App() {
                     {globalBooks.map((book) => (
                       <button className="searchResult" key={`search-${book.id}`} onClick={() => openBook(book)} title={book.title}>
                         <span className="searchCover">
-                          <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />
+                          <BookCover book={book} />
                           <span className="coverBadge">{book.format.toUpperCase()}</span>
                         </span>
                         <span>
@@ -1190,7 +1224,7 @@ export function App() {
                   {books.map((book) => (
                     <button className="book" key={book.id} onClick={() => openBook(book)} title={book.title}>
                       <span className="coverFrame">
-                        <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />
+                        <BookCover book={book} />
                         <span className="coverBadge">{book.format.toUpperCase()}</span>
                       </span>
                       <strong>{book.title}</strong>
@@ -1233,10 +1267,10 @@ export function App() {
                     <span>
                       {selectedBook.format === "epub" ? "Chapter " : ""}
                       {pageIndex + 1}
-                      {selectedBook.format !== "epub" && readerPageMode === "double" && pageIndex + 1 < pages.length
+                      {selectedBook.format !== "epub" && readerPageMode === "double" && pageIndex + 1 < readerTotalPages(selectedBook, pages.length, pdfPageCount)
                         ? `-${pageIndex + 2}`
                         : ""} /{" "}
-                      {Math.max(pages.length, 1)}
+                      {Math.max(readerTotalPages(selectedBook, pages.length, pdfPageCount), 1)}
                     </span>
                   </div>
                   <div className="readerToolbar" aria-label="Reader options">
@@ -1279,7 +1313,7 @@ export function App() {
                           />
                         </label>
                       </>
-                    ) : selectedBook.format === "pdf" ? null : (
+                    ) : (
                       <div className="segmentedControl" role="group" aria-label="Page mode">
                         <button
                           className={readerPageMode === "single" ? "selected" : ""}
@@ -1426,10 +1460,11 @@ export function App() {
                       />
                     </>
                   ) : selectedBook.format === "pdf" ? (
-                    <iframe
-                      className="pdfFrame"
-                      title={selectedBook.title}
-                      src={`/api/books/${selectedBook.id}/pages/0`}
+                    <PdfReader
+                      book={selectedBook}
+                      pageIndex={pageIndex}
+                      pageMode={readerPageMode}
+                      onPageCount={(count) => setPdfPageCount(count)}
                     />
                   ) : (
                     <div className="pageSpread" aria-live="polite">
@@ -1455,7 +1490,7 @@ export function App() {
                     type="range"
                     aria-label={selectedBook.format === "epub" ? t.epubChapterSlider : t.pageSlider}
                     min="0"
-                    max={Math.max(0, pages.length - 1)}
+                    max={Math.max(0, readerTotalPages(selectedBook, pages.length, pdfPageCount) - 1)}
                     value={pageIndex}
                     onChange={(event) => setReaderPage(selectedBook, Number(event.target.value))}
                   />
@@ -1472,6 +1507,23 @@ export function App() {
           <div className="jobLayout">
             <section className="panel">
               <h1>Jobs</h1>
+              <div className="scanSettings">
+                <div>
+                  <strong>{t.scanWorkers}</strong>
+                  <small>{t.scanWorkersHint}</small>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="8"
+                  value={scanWorkerDraft}
+                  onChange={(event) => setScanWorkerDraft(Number(event.target.value))}
+                />
+                <span>{scanWorkerDraft}</span>
+                <button onClick={saveScanSettings} disabled={scanSettingsSaving || scanWorkerDraft === scanSettings.scanWorkers}>
+                  {scanSettingsSaving ? t.saving : t.save}
+                </button>
+              </div>
               {jobs.map((job) => (
                 <button className="jobRow" key={job.id} onClick={() => openJob(job)}>
                   <strong>Job #{job.id}</strong>
@@ -1599,6 +1651,16 @@ export function App() {
                 <option value="game">{t.assetTypeGame}</option>
               </select>
             </label>
+            <label>
+              <span>{t.scanWorkers}</span>
+              <input
+                type="number"
+                min="1"
+                max="8"
+                value={setupScanWorkers}
+                onChange={(event) => setSetupScanWorkers(clampScanWorkers(Number(event.target.value)))}
+              />
+            </label>
             <p className="setupHint">
               如果没有看到 NAS 目录，请先在 Docker compose 里把宿主机路径挂载到容器路径，例如 <code>/volume2/Books:/books:ro</code>。
             </p>
@@ -1722,7 +1784,7 @@ function BookShelf({
         {books.map((book) => (
           <button className="shelfBook" key={`${title}-${book.id}`} onClick={() => onOpen(book)} title={book.title}>
             <span className="shelfCover">
-              <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />
+              <BookCover book={book} />
               <span className="coverBadge">{book.format.toUpperCase()}</span>
             </span>
             <span>
@@ -1739,6 +1801,143 @@ function BookShelf({
       </div>
     </div>
   );
+}
+
+function BookCover({ book }: { book: Book }) {
+  if (book.format === "pdf") {
+    return (
+      <iframe
+        className="pdfCoverPreview"
+        title={`${book.title} cover`}
+        src={`/api/books/${book.id}/pages/0#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`}
+        loading="lazy"
+      />
+    );
+  }
+  return <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />;
+}
+
+function PdfReader({
+  book,
+  pageIndex,
+  pageMode,
+  onPageCount,
+}: {
+  book: Book;
+  pageIndex: number;
+  pageMode: ReaderPageMode;
+  onPageCount: (count: number) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
+  const [documentProxy, setDocumentProxy] = useState<PDFDocumentProxy | null>(null);
+  const [renderError, setRenderError] = useState("");
+  const [sizeTick, setSizeTick] = useState(0);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => setSizeTick((value) => value + 1));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDocumentProxy(null);
+    setRenderError("");
+    const token = getAuthToken();
+    const task = getDocument({
+      url: `/api/books/${book.id}/pages/0`,
+      httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
+      withCredentials: true,
+    });
+
+    task.promise
+      .then((pdf) => {
+        if (cancelled) {
+          void pdf.destroy();
+          return;
+        }
+        setDocumentProxy(pdf);
+        onPageCount(pdf.numPages);
+      })
+      .catch((error) => {
+        if (!cancelled) setRenderError(error instanceof Error ? error.message : "PDF failed to load");
+      });
+
+    return () => {
+      cancelled = true;
+      void task.destroy();
+    };
+  }, [book.id]);
+
+  useEffect(() => {
+    if (!documentProxy || !containerRef.current) return;
+    let cancelled = false;
+    const pdf = documentProxy;
+    const container = containerRef.current;
+    const rect = container.getBoundingClientRect();
+    const gap = pageMode === "double" ? 18 : 0;
+    const pagesToRender = pdfVisiblePages(pageIndex, pdf.numPages, pageMode);
+    const slotWidth = Math.max(120, (rect.width - gap) / Math.max(1, pagesToRender.length));
+    const slotHeight = Math.max(160, rect.height);
+
+    async function render() {
+      try {
+        await Promise.all(
+          pagesToRender.map(async (pageNumber, index) => {
+            const canvas = canvasRefs.current[index];
+            if (!canvas) return;
+            const page = await pdf.getPage(pageNumber);
+            if (cancelled) return;
+            const baseViewport = page.getViewport({ scale: 1 });
+            const dpr = Math.max(1, window.devicePixelRatio || 1);
+            const cssScale = Math.min(slotWidth / baseViewport.width, slotHeight / baseViewport.height);
+            const viewport = page.getViewport({ scale: cssScale * dpr });
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
+            canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
+            const context = canvas.getContext("2d");
+            if (!context) return;
+            await page.render({ canvasContext: context, viewport }).promise;
+          }),
+        );
+        if (!cancelled) setRenderError("");
+      } catch (error) {
+        if (!cancelled) setRenderError(error instanceof Error ? error.message : "PDF page failed to render");
+      }
+    }
+
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [documentProxy, pageIndex, pageMode, sizeTick]);
+
+  const pages = documentProxy ? pdfVisiblePages(pageIndex, documentProxy.numPages, pageMode) : [];
+
+  return (
+    <div ref={containerRef} className={`pdfReader ${pageMode}`}>
+      {renderError && <div className="pdfReaderError">{renderError}</div>}
+      {pages.map((pageNumber, index) => (
+        <canvas
+          key={`${book.id}-${pageNumber}`}
+          ref={(node) => {
+            canvasRefs.current[index] = node;
+          }}
+          aria-label={`PDF page ${pageNumber}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function pdfVisiblePages(index: number, total: number, mode: ReaderPageMode) {
+  const first = Math.max(1, Math.min(total, index + 1));
+  if (mode === "single") return [first];
+  return [first, first + 1].filter((page) => page >= 1 && page <= total);
 }
 
 function GameShelf({
@@ -2148,6 +2347,9 @@ const translations = {
     name: "名称",
     add: "添加",
     scan: "扫描",
+    scanWorkers: "扫描 Worker",
+    scanWorkersHint: "新扫描任务使用的并发数量，NAS 建议 2-4，高性能机器可调到 8。",
+    scanWorkersSaved: (count: number) => `扫描 Worker 已保存为 ${count}`,
     pause: "暂停",
     resume: "恢复",
     cancel: "取消",
@@ -2266,6 +2468,9 @@ const translations = {
     name: "名稱",
     add: "新增",
     scan: "掃描",
+    scanWorkers: "掃描 Worker",
+    scanWorkersHint: "新掃描任務使用的並發數量，NAS 建議 2-4，高效能機器可調到 8。",
+    scanWorkersSaved: (count: number) => `掃描 Worker 已儲存為 ${count}`,
     pause: "暫停",
     resume: "恢復",
     cancel: "取消",
@@ -2384,6 +2589,9 @@ const translations = {
     name: "Name",
     add: "Add",
     scan: "Scan",
+    scanWorkers: "Scan workers",
+    scanWorkersHint: "Concurrent workers for new scan jobs. NAS defaults work well at 2-4; faster machines can use 8.",
+    scanWorkersSaved: (count: number) => `Scan workers saved as ${count}`,
     pause: "Pause",
     resume: "Resume",
     cancel: "Cancel",
@@ -2502,6 +2710,9 @@ const translations = {
     name: "名前",
     add: "追加",
     scan: "スキャン",
+    scanWorkers: "スキャン Worker",
+    scanWorkersHint: "新しいスキャンで使う並列数です。NAS は 2-4、高性能な環境では 8 まで使えます。",
+    scanWorkersSaved: (count: number) => `スキャン Worker を ${count} に保存しました`,
     pause: "一時停止",
     resume: "再開",
     cancel: "キャンセル",
@@ -2620,6 +2831,9 @@ const translations = {
     name: "이름",
     add: "추가",
     scan: "스캔",
+    scanWorkers: "스캔 Worker",
+    scanWorkersHint: "새 스캔 작업의 동시 실행 수입니다. NAS는 2-4, 고성능 장비는 8까지 사용할 수 있습니다.",
+    scanWorkersSaved: (count: number) => `스캔 Worker가 ${count}(으)로 저장됨`,
     pause: "일시정지",
     resume: "재개",
     cancel: "취소",
@@ -2720,6 +2934,16 @@ function writeLocalPreferences(preferences: ClientPreferences) {
   const normalized = normalizeClientPreferences(preferences);
   writeLocalStorage("foliospace_preferences", JSON.stringify(normalized));
   writeLocalStorage("foliospace_locale", normalized.locale);
+}
+
+function clampScanWorkers(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(8, Math.round(value)));
+}
+
+function readerTotalPages(book: Book, archivePages: number, pdfPages: number) {
+  if (book.format === "pdf") return pdfPages;
+  return archivePages;
 }
 
 function readLocalStorage(key: string) {

@@ -44,6 +44,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/setup/status", s.handleSetupStatus)
 	mux.HandleFunc("/api/setup/initialize", s.handleSetupInitialize)
 	mux.HandleFunc("/api/config/directory-roots", s.handleDirectoryRoots)
+	mux.HandleFunc("/api/settings/scan", s.handleScanSettings)
 	mux.HandleFunc("/api/client/info", s.handleClientInfo)
 	mux.HandleFunc("/api/client/preferences", s.handleClientPreferences)
 	mux.HandleFunc("/api/client/home", s.handleClientHome)
@@ -158,6 +159,26 @@ func (s *Server) handleDirectoryRoots(w http.ResponseWriter, r *http.Request) {
 	writeJSONOrError(w, map[string]any{"roots": roots}, err)
 }
 
+func (s *Server) handleScanSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, s.service.ScanSettings())
+	case http.MethodPut:
+		var req service.ScanSettings
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.service.SaveScanSettings(req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, s.service.ScanSettings())
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -206,7 +227,7 @@ func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
 		ServiceName:      "FolioSpace Library",
 		ServiceVersion:   serviceVersion,
 		APIVersion:       "v1",
-		SupportedFormats: []string{"cbz", "zip", "epub", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"},
+		SupportedFormats: []string{"cbz", "zip", "epub", "pdf", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"},
 		Capabilities: clientCapabilities{
 			ClientHome:        true,
 			UnifiedManifest:   true,
@@ -849,7 +870,7 @@ func (s *Server) handleBookAction(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		s.streamPage(w, id, pageIndex)
+		s.streamPage(w, r, id, pageIndex)
 		return
 	}
 	if tail == "progress" && r.Method == http.MethodPut {
@@ -929,7 +950,20 @@ func hasBookListQuery(r *http.Request) bool {
 	return query.Has("limit") || query.Has("offset") || query.Has("q") || query.Has("sort")
 }
 
-func (s *Server) streamPage(w http.ResponseWriter, bookID int64, pageIndex int) {
+func (s *Server) streamPage(w http.ResponseWriter, r *http.Request, bookID int64, pageIndex int) {
+	book, err := s.service.Book(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if book.Format == "pdf" {
+		if pageIndex != 0 {
+			writeError(w, http.StatusInternalServerError, fmt.Errorf("page index %d out of range", pageIndex))
+			return
+		}
+		http.ServeFile(w, r, book.FilePath)
+		return
+	}
 	page, err := s.service.OpenPage(bookID, pageIndex)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
