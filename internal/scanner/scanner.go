@@ -1,14 +1,17 @@
 package scanner
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -22,7 +25,8 @@ import (
 )
 
 type Scanner struct {
-	store *store.Store
+	store       *store.Store
+	workerCount func() int
 }
 
 var (
@@ -31,7 +35,14 @@ var (
 )
 
 func New(store *store.Store) *Scanner {
-	return &Scanner{store: store}
+	return NewWithWorkerCount(store, scanWorkerCount)
+}
+
+func NewWithWorkerCount(store *store.Store, workerCount func() int) *Scanner {
+	if workerCount == nil {
+		workerCount = scanWorkerCount
+	}
+	return &Scanner{store: store, workerCount: workerCount}
 }
 
 func (s *Scanner) ScanLibrary(library domain.Library) (domain.ScanJob, error) {
@@ -57,7 +68,7 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 	_ = s.store.AddJobEvent(job.ID, "info", "scan started")
 	_ = s.store.AddJobEvent(job.ID, "info", "walking "+library.RootPath)
 
-	workers := scanWorkerCount()
+	workers := s.workerCount()
 	if workers > 1 {
 		return s.runScanJobConcurrent(library, job, workers)
 	}
@@ -119,7 +130,6 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 			expectedPlatform := inferGamePlatform(ext, relPath)
 			if s.store.CanSkipGame(path, info.Size(), info.ModTime(), expectedPlatform) {
 				job.SkippedFiles++
-				_ = s.store.AddJobEvent(job.ID, "debug", "skipped unchanged game: "+path)
 				_ = s.store.UpdateScanJob(job)
 				return nil
 			}
@@ -135,6 +145,24 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
+		if kind == "video" {
+			if s.store.CanSkipVideo(path, info.Size(), info.ModTime()) {
+				job.SkippedFiles++
+				_ = s.store.UpdateScanJob(job)
+				return nil
+			}
+			if err := s.indexVideoFile(library, path, info, ext); err != nil {
+				job.ErrorCount++
+				_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
+				_ = s.store.AddJobEvent(job.ID, "error", "video metadata failed: "+path)
+				_ = s.store.UpdateScanJob(job)
+				return nil
+			}
+			job.IndexedFiles++
+			_ = s.store.AddJobEvent(job.ID, "info", "indexed video: "+path)
+			_ = s.store.UpdateScanJob(job)
+			return nil
+		}
 		if err := s.store.DeleteGameByPath(path); err != nil {
 			job.ErrorCount++
 			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
@@ -142,11 +170,17 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
+		if err := s.store.DeleteVideoByPath(path); err != nil {
+			job.ErrorCount++
+			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
+			_ = s.store.AddJobEvent(job.ID, "error", "video cleanup failed: "+path)
+			_ = s.store.UpdateScanJob(job)
+			return nil
+		}
 
 		if index, ok := s.unchangedFileIndex(path, info, ext); ok {
-			if hasCachedBookMetadata(index, ext) {
+			if canSkipUnchangedBook(library, path, index, ext) {
 				job.SkippedFiles++
-				_ = s.store.AddJobEvent(job.ID, "debug", "skipped unchanged: "+path)
 				_ = s.store.UpdateScanJob(job)
 				return nil
 			}
@@ -165,7 +199,6 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 				job.ReclassifiedFiles++
 			}
 			job.SkippedFiles++
-			_ = s.store.AddJobEvent(job.ID, "debug", "skipped unchanged: "+path)
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
@@ -200,7 +233,7 @@ func (s *Scanner) RunScanJob(library domain.Library, job domain.ScanJob) (domain
 		_ = s.store.AddJobEvent(job.ID, "error", "scan failed: "+walkErr.Error())
 		return job, walkErr
 	}
-	if err := s.store.DeleteEmptySeries(library.ID); err != nil {
+	if err := s.cleanupSkippedEntries(library, &job); err != nil {
 		job.Status = "failed"
 		job.CurrentPath = ""
 		job.FinishedAt = time.Now()
@@ -293,13 +326,17 @@ func (s *Scanner) runScanJobConcurrent(library domain.Library, job domain.ScanJo
 	taskCh := make(chan scanFileTask, len(tasks))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	lastPersist := time.Now()
 	stopped := false
 
 	updateJob := func(change func(*domain.ScanJob)) {
 		mu.Lock()
 		defer mu.Unlock()
 		change(&job)
-		_ = s.store.UpdateScanJob(job)
+		if time.Since(lastPersist) >= 500*time.Millisecond || job.Status != "running" {
+			_ = s.store.UpdateScanJob(job)
+			lastPersist = time.Now()
+		}
 	}
 	checkControl := func() bool {
 		mu.Lock()
@@ -341,7 +378,7 @@ func (s *Scanner) runScanJobConcurrent(library domain.Library, job domain.ScanJo
 	if job.Status == "paused" || job.Status == "cancelled" {
 		return job, nil
 	}
-	if err := s.store.DeleteEmptySeries(library.ID); err != nil {
+	if err := s.cleanupSkippedEntries(library, &job); err != nil {
 		job.Status = "failed"
 		job.CurrentPath = ""
 		job.FinishedAt = time.Now()
@@ -375,7 +412,6 @@ func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scan
 			updateJob(func(job *domain.ScanJob) {
 				setCurrent(job)
 				job.SkippedFiles++
-				_ = s.store.AddJobEvent(jobID, "debug", "skipped unchanged game: "+task.path)
 			})
 			return
 		}
@@ -390,17 +426,39 @@ func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scan
 		})
 		return
 	}
+	if task.kind == "video" {
+		if s.store.CanSkipVideo(task.path, task.info.Size(), task.info.ModTime()) {
+			updateJob(func(job *domain.ScanJob) {
+				setCurrent(job)
+				job.SkippedFiles++
+			})
+			return
+		}
+		if err := s.indexVideoFile(library, task.path, task.info, task.ext); err != nil {
+			s.recordTaskError(library.ID, jobID, task.path, domain.ErrorUnknownIO, "video metadata failed: ", err, updateJob)
+			return
+		}
+		updateJob(func(job *domain.ScanJob) {
+			setCurrent(job)
+			job.IndexedFiles++
+			_ = s.store.AddJobEvent(jobID, "info", "indexed video: "+task.path)
+		})
+		return
+	}
 	if err := s.store.DeleteGameByPath(task.path); err != nil {
 		s.recordTaskError(library.ID, jobID, task.path, domain.ErrorUnknownIO, "game cleanup failed: ", err, updateJob)
 		return
 	}
+	if err := s.store.DeleteVideoByPath(task.path); err != nil {
+		s.recordTaskError(library.ID, jobID, task.path, domain.ErrorUnknownIO, "video cleanup failed: ", err, updateJob)
+		return
+	}
 
 	if index, ok := s.unchangedFileIndex(task.path, task.info, task.ext); ok {
-		if hasCachedBookMetadata(index, task.ext) {
+		if canSkipUnchangedBook(library, task.path, index, task.ext) {
 			updateJob(func(job *domain.ScanJob) {
 				setCurrent(job)
 				job.SkippedFiles++
-				_ = s.store.AddJobEvent(jobID, "debug", "skipped unchanged: "+task.path)
 			})
 			return
 		}
@@ -418,7 +476,6 @@ func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scan
 				job.ReclassifiedFiles++
 			}
 			job.SkippedFiles++
-			_ = s.store.AddJobEvent(jobID, "debug", "skipped unchanged: "+task.path)
 		})
 		return
 	}
@@ -441,6 +498,17 @@ func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scan
 	})
 }
 
+func (s *Scanner) cleanupSkippedEntries(library domain.Library, job *domain.ScanJob) error {
+	deleted, err := s.store.DeleteSkippedDirectoryEntries(library.ID, skippedScanDirNames())
+	if err != nil {
+		return err
+	}
+	if deleted > 0 {
+		_ = s.store.AddJobEvent(job.ID, "info", fmt.Sprintf("removed %d skipped-directory entries", deleted))
+	}
+	return s.store.DeleteEmptySeries(library.ID)
+}
+
 func (s *Scanner) recordTaskError(libraryID int64, jobID int64, path string, code domain.ErrorCode, eventPrefix string, err error, updateJob func(func(*domain.ScanJob))) {
 	_ = s.recordPathError(libraryID, jobID, path, code, err.Error())
 	updateJob(func(job *domain.ScanJob) {
@@ -452,6 +520,11 @@ func (s *Scanner) recordTaskError(libraryID int64, jobID int64, path string, cod
 
 func scanWorkerCount() int {
 	value := strings.TrimSpace(os.Getenv("FOLIOSPACE_SCAN_WORKERS"))
+	return NormalizeWorkerCount(value)
+}
+
+func NormalizeWorkerCount(value string) int {
+	value = strings.TrimSpace(value)
 	if value == "" {
 		return 1
 	}
@@ -497,17 +570,26 @@ func classifyFileKind(library domain.Library, path string, ext string) string {
 		}
 		return ""
 	}
+	if library.AssetType == "video" {
+		if isVideoExt(ext) {
+			return "video"
+		}
+		return ""
+	}
 	if isBookExt(ext) {
 		return "book"
 	}
 	if isGameExt(ext) {
 		return "game"
 	}
+	if isVideoExt(ext) {
+		return "video"
+	}
 	return ""
 }
 
 func isBookExt(ext string) bool {
-	return ext == ".cbz" || ext == ".zip" || ext == ".epub" || ext == ".7z"
+	return ext == ".cbz" || ext == ".zip" || ext == ".epub" || ext == ".7z" || ext == ".pdf"
 }
 
 func isGamePackageExt(ext string) bool {
@@ -517,6 +599,15 @@ func isGamePackageExt(ext string) bool {
 func isGameExt(ext string) bool {
 	switch ext {
 	case ".nes", ".sfc", ".smc", ".gba", ".gb", ".gbc", ".nds", ".3ds", ".cia", ".chd", ".iso", ".bin", ".cue":
+		return true
+	default:
+		return false
+	}
+}
+
+func isVideoExt(ext string) bool {
+	switch ext {
+	case ".mp4", ".m4v", ".mov", ".mkv", ".avi", ".webm":
 		return true
 	default:
 		return false
@@ -536,9 +627,14 @@ func (s *Scanner) unchangedFileIndex(path string, info fs.FileInfo, ext string) 
 	return index, ok
 }
 
-func hasCachedBookMetadata(index store.FileIndex, ext string) bool {
+func canSkipUnchangedBook(library domain.Library, path string, index store.FileIndex, ext string) bool {
 	if ext != ".epub" {
-		return false
+		relPath, err := filepath.Rel(library.RootPath, path)
+		if err != nil {
+			return false
+		}
+		seriesTitle, _ := seriesIdentityForRelPath(library.RootPath, relPath)
+		return index.Book.CollectionTitle == seriesTitle
 	}
 	return strings.TrimSpace(index.Book.Creator) != "" || strings.TrimSpace(index.Book.Description) != ""
 }
@@ -589,9 +685,98 @@ func (s *Scanner) indexGameFile(library domain.Library, path string, info fs.Fil
 	return err
 }
 
+func (s *Scanner) indexVideoFile(library domain.Library, path string, info fs.FileInfo, ext string) error {
+	relPath, err := filepath.Rel(library.RootPath, path)
+	if err != nil {
+		return fmt.Errorf("relative path: %w", err)
+	}
+	metadata := probeVideoMetadata(path)
+	_, err = s.store.UpsertVideo(domain.VideoAsset{
+		LibraryID:       library.ID,
+		Title:           mediaTitle(path),
+		Format:          strings.TrimPrefix(ext, "."),
+		FilePath:        path,
+		RelPath:         filepath.ToSlash(relPath),
+		Size:            info.Size(),
+		MTime:           info.ModTime(),
+		DurationSeconds: metadata.durationSeconds,
+		Width:           metadata.width,
+		Height:          metadata.height,
+		VideoCodec:      metadata.videoCodec,
+		AudioCodec:      metadata.audioCodec,
+		ThumbnailStatus: "placeholder",
+	})
+	return err
+}
+
+type videoProbeMetadata struct {
+	durationSeconds float64
+	width           int
+	height          int
+	videoCodec      string
+	audioCodec      string
+}
+
+func probeVideoMetadata(path string) videoProbeMetadata {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		return videoProbeMetadata{}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path).Output()
+	if err != nil {
+		return videoProbeMetadata{}
+	}
+	var payload struct {
+		Format struct {
+			Duration string `json:"duration"`
+		} `json:"format"`
+		Streams []struct {
+			CodecType string `json:"codec_type"`
+			CodecName string `json:"codec_name"`
+			Width     int    `json:"width"`
+			Height    int    `json:"height"`
+			Duration  string `json:"duration"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &payload); err != nil {
+		return videoProbeMetadata{}
+	}
+	metadata := videoProbeMetadata{durationSeconds: parseProbeDuration(payload.Format.Duration)}
+	for _, stream := range payload.Streams {
+		switch stream.CodecType {
+		case "video":
+			if metadata.videoCodec == "" {
+				metadata.videoCodec = strings.ToLower(strings.TrimSpace(stream.CodecName))
+				metadata.width = stream.Width
+				metadata.height = stream.Height
+				if metadata.durationSeconds == 0 {
+					metadata.durationSeconds = parseProbeDuration(stream.Duration)
+				}
+			}
+		case "audio":
+			if metadata.audioCodec == "" {
+				metadata.audioCodec = strings.ToLower(strings.TrimSpace(stream.CodecName))
+			}
+		}
+	}
+	return metadata
+}
+
+func parseProbeDuration(value string) float64 {
+	duration, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || duration < 0 {
+		return 0
+	}
+	return duration
+}
+
 func listBookPages(path string, ext string) ([]domain.Page, error) {
 	if ext == ".epub" {
 		return archive.ListEPUBSpine(path)
+	}
+	if ext == ".pdf" {
+		return []domain.Page{{Index: 0, Name: filepath.Base(path)}}, nil
 	}
 	return archive.ListPages(path)
 }
@@ -753,11 +938,15 @@ func shouldSkipScanDir(rootPath string, path string) bool {
 		return false
 	}
 	switch filepath.Base(path) {
-	case "#recycle", "@eaDir", ".calnotes":
+	case skippedScanDirNames()[0], skippedScanDirNames()[1], skippedScanDirNames()[2]:
 		return true
 	default:
 		return false
 	}
+}
+
+func skippedScanDirNames() []string {
+	return []string{"#recycle", "@eaDir", ".calnotes"}
 }
 
 func seriesIdentityForRelPath(rootPath string, relPath string) (string, string) {
@@ -800,6 +989,14 @@ func gameTitle(path string) string {
 	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	title = regexp.MustCompile(`\s*\([^)]*\)`).ReplaceAllString(title, "")
 	title = regexp.MustCompile(`\s*\[[^]]*]`).ReplaceAllString(title, "")
+	return strings.TrimSpace(title)
+}
+
+func mediaTitle(path string) string {
+	title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	title = strings.ReplaceAll(title, ".", " ")
+	title = strings.ReplaceAll(title, "_", " ")
+	title = regexp.MustCompile(`\s+`).ReplaceAllString(title, " ")
 	return strings.TrimSpace(title)
 }
 

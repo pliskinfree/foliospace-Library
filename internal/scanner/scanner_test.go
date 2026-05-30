@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,7 +256,6 @@ func TestScanLibraryDisambiguatesDuplicateEPUBMetadataTitles(t *testing.T) {
 }
 
 func TestScanLibraryUsesConfiguredWorkerPool(t *testing.T) {
-	t.Setenv("FOLIOSPACE_SCAN_WORKERS", "2")
 	root := t.TempDir()
 	for i := 0; i < 6; i++ {
 		makeZip(t, filepath.Join(root, "Series A", "book"+string(rune('A'+i))+".cbz"), map[string]string{"001.jpg": "image"})
@@ -273,7 +273,7 @@ func TestScanLibraryUsesConfiguredWorkerPool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	job, err := New(st).ScanLibrary(lib)
+	job, err := NewWithWorkerCount(st, func() int { return 2 }).ScanLibrary(lib)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,6 +413,60 @@ func TestScanLibraryIndexesGameROMMetadata(t *testing.T) {
 	}
 }
 
+func TestScanLibraryIndexesVideoMetadata(t *testing.T) {
+	root := t.TempDir()
+	videoPath := filepath.Join(root, "Movies", "Demo.Movie.mp4")
+	if err := os.MkdirAll(filepath.Dir(videoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(videoPath, []byte("video-body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	st := store.New(conn)
+	lib, err := st.CreateLibraryWithType("Movies", root, "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != "completed" || job.IndexedFiles != 1 || job.ErrorCount != 0 {
+		t.Fatalf("job = %#v, want one indexed video and no errors", job)
+	}
+
+	videos, err := st.ListRecentVideos(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(videos) != 1 {
+		t.Fatalf("videos len = %d, want 1", len(videos))
+	}
+	video := videos[0]
+	if video.Title != "Demo Movie" || video.Format != "mp4" || video.Size != int64(len("video-body")) || video.ThumbnailStatus != "placeholder" {
+		t.Fatalf("video = %#v, want inferred video metadata", video)
+	}
+	if video.FilePath == "" {
+		t.Fatalf("video file path is empty, scanner should keep internal path")
+	}
+
+	secondJob, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondJob.SkippedFiles != 1 || secondJob.IndexedFiles != 0 {
+		t.Fatalf("second job = %#v, want unchanged video skipped", secondJob)
+	}
+}
+
 func TestScanLibraryTreatsZipAsGameWhenLibraryIsGameTyped(t *testing.T) {
 	root := t.TempDir()
 	makeZip(t, filepath.Join(root, "Arcade", "mslug.zip"), map[string]string{"mslug.rom": "rom"})
@@ -537,6 +591,118 @@ func TestScanLibraryTreats7zAsBookUnlessLibraryIsGameTyped(t *testing.T) {
 	}
 	if len(games) != 0 {
 		t.Fatalf("games after cleanup = %#v, want stale 7z game removed", games)
+	}
+}
+
+func TestScanLibraryIndexesPDFAsBook(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "Manuals", "guide.pdf")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("%PDF-1.4\n% foliospace test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Comics", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.DiscoveredFiles != 1 || job.IndexedFiles != 1 || job.ErrorCount != 0 {
+		t.Fatalf("job = %#v, want one pdf indexed", job)
+	}
+
+	series, err := st.ListSeries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(series) != 1 || series[0].Title != "Manuals" || series[0].PrimaryType != "book" {
+		t.Fatalf("series = %#v, want pdf book collection", series)
+	}
+	books, err := st.ListBooks(series[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(books) != 1 || books[0].Title != "guide" || books[0].Format != "pdf" || books[0].PageCount != 1 {
+		t.Fatalf("books = %#v, want single-page pdf entry", books)
+	}
+}
+
+func TestScanLibraryPrunesSkippedDirectoryIndexes(t *testing.T) {
+	root := t.TempDir()
+	activePath := filepath.Join(root, "Active", "keep.cbz")
+	recyclePath := filepath.Join(root, "#recycle", "old.cbz")
+	if err := os.MkdirAll(filepath.Dir(activePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeZip(t, activePath, map[string]string{"001.jpg": "keep"})
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Comics", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeSeries, err := st.UpsertSeries(lib.ID, "Active", "Active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSeries, err := st.UpsertSeries(lib.ID, "#recycle", "#recycle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldBook, err := st.UpsertBook(oldSeries.ID, "old", "cbz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertFile(oldBook.ID, lib.ID, recyclePath, "#recycle/old.cbz", 10, time.Unix(10, 0), ".cbz"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertBook(activeSeries.ID, "placeholder", "cbz"); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != "completed" || job.ErrorCount != 0 {
+		t.Fatalf("job = %#v, want clean completed scan", job)
+	}
+	series, err := st.ListSeries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range series {
+		if strings.Contains(item.DirectoryPath, "#recycle") || strings.Contains(item.Title, "#recycle") {
+			t.Fatalf("series = %#v, want recycle collection pruned", series)
+		}
+	}
+	books, err := st.ListBooks(activeSeries.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, book := range books {
+		if book.Title == "old" {
+			t.Fatalf("books = %#v, want recycle book pruned", books)
+		}
 	}
 }
 

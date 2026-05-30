@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, MouseEvent, TouchEvent } from "react";
-import { api, Book, BookPrivateState, clearAuthToken, ClientPreferences, DirectoryListing, EpubManifest, FileError, GameAsset, getAuthToken, JobEvent, Library, Page, ScanJob, Series, setAuthToken } from "./api";
+import type { FormEvent, MouseEvent, ReactNode, TouchEvent } from "react";
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist";
+import type { PDFDocumentProxy } from "pdfjs-dist";
+import pdfWorkerURL from "pdfjs-dist/build/pdf.worker.mjs?url";
+import { api, Book, BookPrivateState, clearAuthToken, ClientPreferences, DirectoryEntry, DirectoryListing, EpubManifest, FileError, GameAsset, getAuthToken, JobEvent, Library, Page, ScanJob, Series, setAuthToken, SetupStatus, ScanSettings, VideoAsset, VideoTranscodeQueueStatus, VideoTranscodeStatus } from "./api";
 
-type View = "library" | "reader" | "jobs" | "errors";
+GlobalWorkerOptions.workerSrc = pdfWorkerURL;
+
+type View = "library" | "reader" | "games" | "videos" | "jobs" | "errors";
 type ReaderPageMode = "single" | "double";
 type EpubTheme = "light" | "sepia" | "dark";
 type BookSort = "title" | "recently_added" | "last_read" | "progress" | "unread";
 type Locale = "zh" | "zht" | "en" | "ja" | "ko";
-type LibraryAssetType = "mixed" | "book" | "comic" | "game";
+type LibraryAssetType = "mixed" | "book" | "comic" | "game" | "video";
 const bookPageSize = 60;
+const catalogPageSize = 200;
 
 export function App() {
   const initialPreferences = useRef(readLocalPreferences()).current;
@@ -21,7 +27,19 @@ export function App() {
   const [favoriteBooks, setFavoriteBooks] = useState<Book[]>([]);
   const [wantBooks, setWantBooks] = useState<Book[]>([]);
   const [gameShelf, setGameShelf] = useState<GameAsset[]>([]);
-  const [collectionGames, setCollectionGames] = useState<GameAsset[]>([]);
+  const [videoShelf, setVideoShelf] = useState<VideoAsset[]>([]);
+  const [gameCatalog, setGameCatalog] = useState<GameAsset[]>([]);
+  const [videoCatalog, setVideoCatalog] = useState<VideoAsset[]>([]);
+  const [gameCatalogTotal, setGameCatalogTotal] = useState(0);
+  const [videoCatalogTotal, setVideoCatalogTotal] = useState(0);
+  const [gameCatalogHasMore, setGameCatalogHasMore] = useState(false);
+  const [videoCatalogHasMore, setVideoCatalogHasMore] = useState(false);
+  const [gameCatalogLoading, setGameCatalogLoading] = useState(false);
+  const [videoCatalogLoading, setVideoCatalogLoading] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState<VideoAsset | null>(null);
+  const [videoTranscodeStatus, setVideoTranscodeStatus] = useState<VideoTranscodeStatus | null>(null);
+  const [videoTranscodeQueueStatus, setVideoTranscodeQueueStatus] = useState<VideoTranscodeQueueStatus | null>(null);
+  const [videoPlaybackReloadKey, setVideoPlaybackReloadKey] = useState(0);
   const [jobs, setJobs] = useState<ScanJob[]>([]);
   const [errors, setErrors] = useState<FileError[]>([]);
   const [jobEvents, setJobEvents] = useState<JobEvent[]>([]);
@@ -47,6 +65,17 @@ export function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authInput, setAuthInput] = useState("");
   const [authError, setAuthError] = useState("");
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [setupRequired, setSetupRequired] = useState(false);
+  const [setupToken, setSetupToken] = useState("");
+  const [setupName, setSetupName] = useState("");
+  const [setupPath, setSetupPath] = useState("");
+  const [setupAssetType, setSetupAssetType] = useState<LibraryAssetType>("mixed");
+  const [setupScanWorkers, setSetupScanWorkers] = useState(2);
+  const [setupError, setSetupError] = useState("");
+  const [scanSettings, setScanSettings] = useState<ScanSettings>({ scanWorkers: 1 });
+  const [scanWorkerDraft, setScanWorkerDraft] = useState(1);
+  const [scanSettingsSaving, setScanSettingsSaving] = useState(false);
   const [activeTask, setActiveTask] = useState<string | null>(null);
   const [readerLoadState, setReaderLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [readerRetryKey, setReaderRetryKey] = useState(0);
@@ -58,6 +87,7 @@ export function App() {
   const [epubPagePosition, setEpubPagePosition] = useState(0);
   const [epubPageCount, setEpubPageCount] = useState(1);
   const [epubTocOpen, setEpubTocOpen] = useState(false);
+  const [pdfPageCount, setPdfPageCount] = useState(1);
   const [newLibraryName, setNewLibraryName] = useState("");
   const [newLibraryPath, setNewLibraryPath] = useState("");
   const [newLibraryAssetType, setNewLibraryAssetType] = useState<LibraryAssetType>("mixed");
@@ -74,6 +104,8 @@ export function App() {
   const readerRef = useRef<HTMLElement | null>(null);
   const bookLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const collectionSectionsRef = useRef<HTMLDivElement | null>(null);
+  const videoPlayerRef = useRef<HTMLVideoElement | null>(null);
+  const previousVideoTranscodeStatus = useRef<string>("");
   const collectionScrollTop = useRef(0);
   const bookListRequest = useRef(0);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
@@ -94,8 +126,9 @@ export function App() {
     if (showProgress) {
       setActiveTask("Refreshing library");
     }
-    const [preferences, nextLibraries, nextSeries, nextJobs, nextErrors, nextContinueBooks, nextRecentBooks, nextFavoriteBooks, nextWantBooks, nextGameShelf] = await Promise.all([
+    const [preferences, nextScanSettings, nextLibraries, nextSeries, nextJobs, nextErrors, nextContinueBooks, nextRecentBooks, nextFavoriteBooks, nextWantBooks, nextGameShelf, nextVideoShelf] = await Promise.all([
       api.clientPreferences(),
+      api.scanSettings(),
       api.libraries(),
       api.series(),
       api.jobs(),
@@ -105,9 +138,12 @@ export function App() {
       api.favoriteBooks(),
       api.privateStatusBooks("want"),
       api.recentGames(),
+      api.recentVideos(),
     ]);
     applyClientPreferences(preferences);
     preferencesLoaded.current = true;
+    setScanSettings(nextScanSettings);
+    setScanWorkerDraft(nextScanSettings.scanWorkers);
     setLibraries(arrayOrEmpty(nextLibraries));
     setSeries(arrayOrEmpty(nextSeries));
     setJobs(arrayOrEmpty(nextJobs));
@@ -117,14 +153,73 @@ export function App() {
     setFavoriteBooks(arrayOrEmpty(nextFavoriteBooks));
     setWantBooks(arrayOrEmpty(nextWantBooks));
     setGameShelf(arrayOrEmpty(nextGameShelf));
+    setVideoShelf(arrayOrEmpty(nextVideoShelf));
     if (showProgress) {
       setActiveTask(null);
+    }
+  }
+
+  async function openGameCatalog() {
+    setView("games");
+    if (gameCatalog.length > 0 || gameCatalogLoading) return;
+    await loadGameCatalogPage(0, true);
+  }
+
+  async function loadGameCatalogPage(offset: number, reset = false) {
+    if (gameCatalogLoading) return;
+    setGameCatalogLoading(true);
+    try {
+      const page = await api.clientGames({ limit: catalogPageSize, offset, sort: "platform" });
+      const items = arrayOrEmpty(page.items);
+      setGameCatalog((current) => reset ? items : mergeByID(current, items));
+      setGameCatalogTotal(page.total);
+      setGameCatalogHasMore(page.hasMore);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to load games");
+    } finally {
+      setGameCatalogLoading(false);
+    }
+  }
+
+  async function openVideoCatalog() {
+    setView("videos");
+    if (videoCatalog.length > 0 || videoCatalogLoading) return;
+    await loadVideoCatalogPage(0, true);
+  }
+
+  async function loadVideoCatalogPage(offset: number, reset = false) {
+    if (videoCatalogLoading) return;
+    setVideoCatalogLoading(true);
+    try {
+      const page = await api.clientVideos({ limit: catalogPageSize, offset, sort: "title" });
+      const items = arrayOrEmpty(page.items);
+      setVideoCatalog((current) => reset ? items : mergeByID(current, items));
+      setVideoCatalogTotal(page.total);
+      setVideoCatalogHasMore(page.hasMore);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to load videos");
+    } finally {
+      setVideoCatalogLoading(false);
     }
   }
 
   useEffect(() => {
     async function bootstrap() {
       try {
+        const setup = await api.setupStatus();
+        setSetupStatus(setup);
+        if (!setup.initialized) {
+          setSetupRequired(true);
+          setAuthEnabled(setup.authEnabled);
+          setSetupScanWorkers(setup.scanWorkers || 2);
+          const firstRoot = setup.directoryRoots[0];
+          if (firstRoot) {
+            setSetupPath(firstRoot.path);
+            setSetupName(firstRoot.name);
+          }
+          setStatus("Setup required");
+          return;
+        }
         const auth = await api.authStatus();
         setAuthEnabled(auth.enabled);
         const storedToken = getAuthToken();
@@ -244,6 +339,62 @@ export function App() {
     }
   }
 
+  async function submitSetup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = setupToken.trim();
+    if (!setupPath.trim() && !setupStatus?.hasLibraries) return;
+    if (!setupStatus?.authEnabled && !token) {
+      setSetupError("Access token is required");
+      return;
+    }
+    setSetupError("");
+    setActiveTask("Initializing FolioSpace Library");
+    try {
+      if (setupStatus?.authEnabled && token) {
+        setAuthToken(token);
+      }
+      await api.setupInitialize({
+        token: setupStatus?.authEnabled ? "" : token,
+        name: setupName,
+        rootPath: setupPath,
+        assetType: setupAssetType,
+        scanWorkers: setupScanWorkers,
+      });
+      if (!setupStatus?.authEnabled) {
+        setAuthToken(token);
+      }
+      setSetupRequired(false);
+      setAuthRequired(false);
+      setAuthEnabled(true);
+      setSetupToken("");
+      setStatus("Ready");
+      await refreshAll(true);
+    } catch (error) {
+      if (setupStatus?.authEnabled) {
+        clearAuthToken();
+      }
+      setSetupError(error instanceof Error ? error.message : "Setup failed");
+    } finally {
+      setAuthChecked(true);
+      setActiveTask(null);
+    }
+  }
+
+  async function saveScanSettings() {
+    const nextWorkers = clampScanWorkers(scanWorkerDraft);
+    setScanSettingsSaving(true);
+    try {
+      const saved = await api.saveScanSettings({ scanWorkers: nextWorkers });
+      setScanSettings(saved);
+      setScanWorkerDraft(saved.scanWorkers);
+      setStatus(t.scanWorkersSaved(saved.scanWorkers));
+    } catch (error) {
+      handleAPIError(error);
+    } finally {
+      setScanSettingsSaving(false);
+    }
+  }
+
   function lockApp() {
     api.authLogout().catch(() => undefined);
     clearAuthToken();
@@ -287,19 +438,20 @@ export function App() {
     if (!selectedBook) return;
     if (selectedBook.format === "epub") return;
 
+    const totalPages = selectedBook.format === "pdf" ? pdfPageCount : pages.length;
     const timer = window.setTimeout(() => {
       api
         .progressDetail(
           selectedBook.id,
           pageIndex,
           "",
-          pages.length > 1 ? pageIndex / (pages.length - 1) : 0,
+          totalPages > 1 ? pageIndex / (totalPages - 1) : 0,
         )
         .catch(() => undefined);
     }, 450);
 
     return () => window.clearTimeout(timer);
-  }, [selectedBook, pageIndex, pages.length]);
+  }, [selectedBook, pageIndex, pages.length, pdfPageCount]);
 
   useEffect(() => {
     if (!selectedBook || selectedBook.format !== "epub") return;
@@ -413,6 +565,13 @@ export function App() {
     setDirectoryPickerOpen(false);
   }
 
+  function selectSetupRoot(root: DirectoryEntry) {
+    setSetupPath(root.path);
+    if (!setupName.trim()) {
+      setSetupName(root.name);
+    }
+  }
+
   async function openJob(job: ScanJob) {
     setActiveTask(`Loading job #${job.id}`);
     setSelectedJob(job);
@@ -430,7 +589,6 @@ export function App() {
     setSelectedSeries(item);
     setQuery("");
     setBooks([]);
-    setCollectionGames([]);
     setBookTotal(0);
     setBookHasMore(false);
   }
@@ -475,29 +633,102 @@ export function App() {
   useEffect(() => {
     if (!selectedSeries) return;
     setBooks([]);
-    setCollectionGames([]);
     setBookTotal(0);
     setBookHasMore(false);
     void loadBooksPage(selectedSeries, 0, true);
   }, [loadBooksPage, selectedSeries]);
 
   useEffect(() => {
-    if (!selectedSeries) return;
+    if (!selectedVideo) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSelectedVideo(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedVideo]);
+
+  useEffect(() => {
+    previousVideoTranscodeStatus.current = "";
+    setVideoTranscodeStatus(null);
+    setVideoTranscodeQueueStatus(null);
+    if (view !== "videos" || !selectedVideo || selectedVideo.playbackMode !== "hls") {
+      return;
+    }
     let cancelled = false;
-    api.collectionAssets(selectedSeries.id)
-      .then((assets) => {
+    let timer: number | undefined;
+
+    const poll = async () => {
+      try {
+        const [nextStatus, nextQueueStatus] = await Promise.all([
+          api.videoTranscodeStatus(selectedVideo.id),
+          api.videoTranscodeQueueStatus(),
+        ]);
         if (cancelled) return;
-        setCollectionGames(arrayOrEmpty(assets.games));
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setStatus(error instanceof Error ? error.message : "Failed to load games");
+        const previousStatus = previousVideoTranscodeStatus.current;
+        previousVideoTranscodeStatus.current = nextStatus.status;
+        setVideoTranscodeStatus(nextStatus);
+        setVideoTranscodeQueueStatus(nextQueueStatus);
+        if (nextStatus.status === "ready" && previousStatus && previousStatus !== "ready") {
+          setVideoPlaybackReloadKey((key) => key + 1);
         }
-      });
+        if (nextStatus.status !== "ready" && nextStatus.status !== "failed") {
+          timer = window.setTimeout(poll, 2000);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setVideoTranscodeStatus({
+            videoId: selectedVideo.id,
+            status: "failed",
+            message: error instanceof Error ? error.message : t.videoTranscodeStatusFailed,
+            segmentCount: 0,
+          });
+        }
+      }
+    };
+
+    void poll();
     return () => {
       cancelled = true;
+      if (timer) window.clearTimeout(timer);
     };
-  }, [selectedSeries]);
+  }, [selectedVideo, t.videoTranscodeStatusFailed, view]);
+
+  useEffect(() => {
+    if (view !== "videos" || !selectedVideo || !videoPlayerRef.current) return;
+    const player = videoPlayerRef.current;
+    const source = videoPlaybackSource(selectedVideo);
+    if (!source) return;
+    let disposed = false;
+    let hls: { destroy: () => void; loadSource: (source: string) => void; attachMedia: (media: HTMLMediaElement) => void } | null = null;
+    player.removeAttribute("src");
+    if (selectedVideo.playbackMode === "hls") {
+      if (player.canPlayType("application/vnd.apple.mpegurl")) {
+        player.src = source;
+        player.load();
+      } else {
+        void import("hls.js").then(({ default: Hls }) => {
+          if (disposed) return;
+          if (Hls.isSupported()) {
+            hls = new Hls({ enableWorker: true });
+            hls.loadSource(source);
+            hls.attachMedia(player);
+          } else {
+            player.src = source;
+            player.load();
+          }
+        });
+      }
+    } else {
+      player.src = source;
+      player.load();
+    }
+    return () => {
+      disposed = true;
+      hls?.destroy();
+    };
+  }, [selectedVideo, videoPlaybackReloadKey, view]);
 
   useEffect(() => {
     const node = bookLoadMoreRef.current;
@@ -521,6 +752,7 @@ export function App() {
     setDisplayedPageIndex(0);
     setEpubPagePosition(0);
     setEpubPageCount(1);
+    setPdfPageCount(1);
     setEpubTocOpen(false);
     setReaderLoadState("loading");
     try {
@@ -536,9 +768,10 @@ export function App() {
         setReaderLoadState("ready");
       } else {
         const progress = await api.readProgress(book.id);
-        const restoredPage = Math.max(0, Math.min(progress.pageIndex, Math.max(0, nextPages.length - 1)));
+        const restoredPage = book.format === "pdf" ? Math.max(0, progress.pageIndex) : Math.max(0, Math.min(progress.pageIndex, Math.max(0, nextPages.length - 1)));
         setPageIndex(restoredPage);
         setDisplayedPageIndex(restoredPage);
+        setReaderLoadState("ready");
       }
       setSelectedBook(book);
       setView("reader");
@@ -575,7 +808,8 @@ export function App() {
   }
 
   async function setReaderPage(book: Book, nextIndex: number) {
-    const clamped = Math.max(0, Math.min(nextIndex, Math.max(0, pages.length - 1)));
+    const totalPages = book.format === "pdf" ? pdfPageCount : pages.length;
+    const clamped = Math.max(0, Math.min(nextIndex, Math.max(0, totalPages - 1)));
     if (book.format === "epub") {
       setEpubPagePosition(0);
       setEpubPageCount(1);
@@ -587,7 +821,7 @@ export function App() {
   }
 
   useEffect(() => {
-    if (!selectedBook || pages.length === 0 || selectedBook.format === "epub") return;
+    if (!selectedBook || pages.length === 0 || selectedBook.format === "epub" || selectedBook.format === "pdf") return;
 
     let cancelled = false;
     const targetIndex = pageIndex;
@@ -640,7 +874,7 @@ export function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [view, selectedBook, pageIndex, pages.length, readerPageMode, epubPagePosition, epubPageCount]);
+  }, [view, selectedBook, pageIndex, pages.length, pdfPageCount, readerPageMode, epubPagePosition, epubPageCount]);
 
   useEffect(() => {
     if (view !== "reader" || !selectedBook) return;
@@ -662,7 +896,7 @@ export function App() {
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("touchend", onTouchEnd);
     };
-  }, [view, selectedBook, pageIndex, pages.length, readerPageMode, epubPagePosition, epubPageCount]);
+  }, [view, selectedBook, pageIndex, pages.length, pdfPageCount, readerPageMode, epubPagePosition, epubPageCount]);
 
   function preloadPage(bookID: number, index: number) {
     const src = `/api/books/${bookID}/pages/${index}`;
@@ -796,7 +1030,6 @@ export function App() {
     const sections = [
       { key: "comic", title: t.comicCollections, items: [] as Series[] },
       { key: "book", title: t.bookCollections, items: [] as Series[] },
-      { key: "game", title: t.gameCollections, items: [] as Series[] },
     ];
     for (const item of filteredSeries) {
       const kind = collectionKind(item, libraries);
@@ -829,6 +1062,12 @@ export function App() {
         </button>
         <button className={view === "reader" ? "active" : ""} onClick={() => setView("reader")}>
           {t.reader}
+        </button>
+        <button className={view === "games" ? "active" : ""} onClick={openGameCatalog}>
+          {t.gameShelf}
+        </button>
+        <button className={view === "videos" ? "active" : ""} onClick={openVideoCatalog}>
+          {t.videoShelf}
         </button>
         <button className={view === "jobs" ? "active" : ""} onClick={() => setView("jobs")}>
           {t.jobs}
@@ -939,7 +1178,7 @@ export function App() {
                     {globalBooks.map((book) => (
                       <button className="searchResult" key={`search-${book.id}`} onClick={() => openBook(book)} title={book.title}>
                         <span className="searchCover">
-                          <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />
+                          <BookCover book={book} />
                           <span className="coverBadge">{book.format.toUpperCase()}</span>
                         </span>
                         <span>
@@ -979,6 +1218,7 @@ export function App() {
                   <option value="comic">{t.assetTypeComic}</option>
                   <option value="book">{t.assetTypeBook}</option>
                   <option value="game">{t.assetTypeGame}</option>
+                  <option value="video">{t.assetTypeVideo}</option>
                 </select>
                 <button disabled={!newLibraryPath.trim()}>{t.add}</button>
               </form>
@@ -998,7 +1238,7 @@ export function App() {
               </div>
             </section>
 
-            {(continueBooks.length > 0 || favoriteBooks.length > 0 || wantBooks.length > 0 || gameShelf.length > 0 || recentBooks.length > 0) && (
+            {(continueBooks.length > 0 || favoriteBooks.length > 0 || wantBooks.length > 0 || gameShelf.length > 0 || videoShelf.length > 0 || recentBooks.length > 0) && (
               <section className="homeRows quickShelfPanel panel wide" aria-label="Reading shortcuts">
                 <div className="quickShelfColumn">
                   {continueBooks.length > 0 && (
@@ -1038,6 +1278,22 @@ export function App() {
                       subtitle={t.gameShelfSubtitle}
                       games={gameShelf.slice(0, 4)}
                       meta={(game) => gameMeta(game, t)}
+                      moreLabel={t.more}
+                      onMore={openGameCatalog}
+                    />
+                  )}
+                  {videoShelf.length > 0 && (
+                    <VideoShelf
+                      title={t.videoShelf}
+                      subtitle={t.videoShelfSubtitle}
+                      videos={videoShelf.slice(0, 4)}
+                      meta={(video) => videoMeta(video, t)}
+                      onOpen={(video) => {
+                        setSelectedVideo(video);
+                        void openVideoCatalog();
+                      }}
+                      moreLabel={t.more}
+                      onMore={openVideoCatalog}
                     />
                   )}
                   {recentBooks.length > 0 && (
@@ -1096,7 +1352,7 @@ export function App() {
                 <div>
                   <h1>{selectedSeries ? selectedSeries.title : t.volumeWall}</h1>
                   <small>
-                    {selectedSeries ? loadedCollectionCountLabel(selectedSeries, books.length, collectionGames.length) : t.selectCollection}
+                    {selectedSeries ? loadedCollectionCountLabel(selectedSeries, books.length, 0, 0) : t.selectCollection}
                   </small>
                 </div>
                 <div className="coverWallTools">
@@ -1115,15 +1371,12 @@ export function App() {
                   )}
                 </div>
               </div>
-              {selectedSeries && (books.length > 0 || collectionGames.length > 0) ? (
+              {selectedSeries && books.length > 0 ? (
                 <div className="books">
-                  {[...collectionGames].sort(compareGamesByPlatform).map((game) => (
-                    <GameTile key={`collection-game-${game.id}`} game={game} meta={gameMeta(game, t)} />
-                  ))}
                   {books.map((book) => (
                     <button className="book" key={book.id} onClick={() => openBook(book)} title={book.title}>
                       <span className="coverFrame">
-                        <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />
+                        <BookCover book={book} />
                         <span className="coverBadge">{book.format.toUpperCase()}</span>
                       </span>
                       <strong>{book.title}</strong>
@@ -1155,6 +1408,87 @@ export function App() {
           </div>
         )}
 
+        {view === "games" && (
+          <CatalogPage
+            title={t.gameShelf}
+            subtitle={t.gameCatalogSubtitle}
+            countLabel={gameCatalogLoading && gameCatalog.length === 0 ? t.loadingGames : t.catalogLoadedCount(gameCatalog.length, gameCatalogTotal)}
+          >
+            <div className="catalogGrid games">
+              {[...gameCatalog].sort(compareGamesByPlatform).map((game) => (
+                <GameTile key={`catalog-game-${game.id}`} game={game} meta={gameMeta(game, t)} />
+              ))}
+              {gameCatalogHasMore && (
+                <button className="catalogLoadMore" type="button" disabled={gameCatalogLoading} onClick={() => loadGameCatalogPage(gameCatalog.length)}>
+                  {gameCatalogLoading ? t.loadingGames : t.loadMore}
+                </button>
+              )}
+            </div>
+          </CatalogPage>
+        )}
+
+        {view === "videos" && (
+          <section className="catalogPage videoCatalogPage">
+            <div className="catalogHeader">
+              <div>
+                <h1>{t.videoShelf}</h1>
+                <small>{videoCatalogLoading && videoCatalog.length === 0 ? t.loadingVideos : t.catalogLoadedCount(videoCatalog.length, videoCatalogTotal)}</small>
+                <span>{t.videoCoverHint}</span>
+              </div>
+            </div>
+            {selectedVideo && (
+              <div className="inlineVideoPlayer">
+                <div>
+                  <strong>{selectedVideo.title}</strong>
+                  <small>{videoMeta(selectedVideo, t)}</small>
+                </div>
+                <video
+                  ref={videoPlayerRef}
+                  key={`${selectedVideo.id}-${videoPlaybackReloadKey}`}
+                  className="videoPlayer"
+                  controls
+                  preload="metadata"
+                  poster={selectedVideo.thumbnailUrl}
+                />
+                {!selectedVideo.directPlayable && (
+                  <div className="videoTranscodePanel">
+                    <span className={`videoTranscodeStatus ${videoTranscodeStatus?.status || "idle"}`}>
+                      {videoTranscodeLabel(videoTranscodeStatus, t)}
+                    </span>
+                    <small className="videoTranscodeHint">
+                      {selectedVideo.playbackReason || t.videoTranscodeHint}
+                    </small>
+                    {videoTranscodeQueueStatus?.activeVideoId && videoTranscodeQueueStatus.activeVideoId !== selectedVideo.id && (
+                      <small className="videoTranscodeHint">
+                        {t.videoCurrentTranscode(videoTranscodeQueueStatus.activeTitle || `#${videoTranscodeQueueStatus.activeVideoId}`)}
+                      </small>
+                    )}
+                    <button type="button" onClick={() => setVideoPlaybackReloadKey((key) => key + 1)}>
+                      {t.videoReloadPlayback}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="catalogGrid videos">
+              {[...videoCatalog].sort(compareVideosByTitle).map((video) => (
+                <VideoTile
+                  className={selectedVideo?.id === video.id ? "book selected" : "book"}
+                  key={`catalog-video-${video.id}`}
+                  video={video}
+                  meta={videoMeta(video, t)}
+                  onOpen={setSelectedVideo}
+                />
+              ))}
+              {videoCatalogHasMore && (
+                <button className="catalogLoadMore" type="button" disabled={videoCatalogLoading} onClick={() => loadVideoCatalogPage(videoCatalog.length)}>
+                  {videoCatalogLoading ? t.loadingVideos : t.loadMore}
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
         {view === "reader" && (
           <section className="reader" ref={readerRef}>
             {selectedBook ? (
@@ -1166,10 +1500,10 @@ export function App() {
                     <span>
                       {selectedBook.format === "epub" ? "Chapter " : ""}
                       {pageIndex + 1}
-                      {selectedBook.format !== "epub" && readerPageMode === "double" && pageIndex + 1 < pages.length
+                      {selectedBook.format !== "epub" && readerPageMode === "double" && pageIndex + 1 < readerTotalPages(selectedBook, pages.length, pdfPageCount)
                         ? `-${pageIndex + 2}`
                         : ""} /{" "}
-                      {Math.max(pages.length, 1)}
+                      {Math.max(readerTotalPages(selectedBook, pages.length, pdfPageCount), 1)}
                     </span>
                   </div>
                   <div className="readerToolbar" aria-label="Reader options">
@@ -1295,13 +1629,13 @@ export function App() {
                   </section>
                 )}
                 <div
-                  className={`pageStage ${selectedBook.format === "epub" ? "epub" : readerPageMode}`}
+                  className={`pageStage ${selectedBook.format === "epub" ? "epub" : selectedBook.format === "pdf" ? "pdf" : readerPageMode}`}
                   onMouseDownCapture={handleReaderMouseDown}
                   onTouchStartCapture={handleReaderTouchStart}
                 >
                   <button className="pageEdge previous" aria-label="Previous page" onClick={goReaderPrevious} />
                   <button className="pageEdge next" aria-label="Next page" onClick={goReaderNext} />
-                  {readerLoadState === "loading" && selectedBook.format !== "epub" && pageIndex !== displayedPageIndex && (
+                  {readerLoadState === "loading" && selectedBook.format !== "epub" && selectedBook.format !== "pdf" && pageIndex !== displayedPageIndex && (
                     <div className="pageLoading floating" role="status" aria-live="polite">
                       <div className="pageProgress"><div /></div>
                       <span>{t.loadingPage(pageIndex + 1)}</span>
@@ -1358,6 +1692,13 @@ export function App() {
                         }}
                       />
                     </>
+                  ) : selectedBook.format === "pdf" ? (
+                    <PdfReader
+                      book={selectedBook}
+                      pageIndex={pageIndex}
+                      pageMode={readerPageMode}
+                      onPageCount={(count) => setPdfPageCount(count)}
+                    />
                   ) : (
                     <div className="pageSpread" aria-live="polite">
                       {visiblePageIndexes(displayedPageIndex, pages.length, readerPageMode).map((visibleIndex) => (
@@ -1382,7 +1723,7 @@ export function App() {
                     type="range"
                     aria-label={selectedBook.format === "epub" ? t.epubChapterSlider : t.pageSlider}
                     min="0"
-                    max={Math.max(0, pages.length - 1)}
+                    max={Math.max(0, readerTotalPages(selectedBook, pages.length, pdfPageCount) - 1)}
                     value={pageIndex}
                     onChange={(event) => setReaderPage(selectedBook, Number(event.target.value))}
                   />
@@ -1399,6 +1740,23 @@ export function App() {
           <div className="jobLayout">
             <section className="panel">
               <h1>Jobs</h1>
+              <div className="scanSettings">
+                <div>
+                  <strong>{t.scanWorkers}</strong>
+                  <small>{t.scanWorkersHint}</small>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="8"
+                  value={scanWorkerDraft}
+                  onChange={(event) => setScanWorkerDraft(Number(event.target.value))}
+                />
+                <span>{scanWorkerDraft}</span>
+                <button onClick={saveScanSettings} disabled={scanSettingsSaving || scanWorkerDraft === scanSettings.scanWorkers}>
+                  {scanSettingsSaving ? t.saving : t.save}
+                </button>
+              </div>
               {jobs.map((job) => (
                 <button className="jobRow" key={job.id} onClick={() => openJob(job)}>
                   <strong>Job #{job.id}</strong>
@@ -1473,6 +1831,80 @@ export function App() {
           </section>
         )}
       </section>
+      {setupRequired && (
+        <div className="authOverlay setupOverlay" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+          <form className="authPanel setupPanel" onSubmit={submitSetup}>
+            <div>
+              <h1 id="setup-title">FolioSpace Library 0.82 Setup</h1>
+              <small>
+                {setupStatus?.hasLibraries
+                  ? "设置访问密钥，沿用当前数据库里的资源目录。"
+                  : "设置访问密钥，并选择 Docker 容器内可访问的第一个资源目录。"}
+              </small>
+            </div>
+            <label>
+              <span>{setupStatus?.authEnabled ? "当前访问密钥" : "新访问密钥"}</span>
+              <input
+                autoFocus
+                type="password"
+                value={setupToken}
+                onChange={(event) => setSetupToken(event.target.value)}
+                placeholder={setupStatus?.authEnabled ? "Existing access token" : "At least 8 characters"}
+              />
+            </label>
+            <label>
+              <span>资源目录名称</span>
+              <input value={setupName} onChange={(event) => setSetupName(event.target.value)} placeholder="Books / Comics / GameROMS" />
+            </label>
+            <label>
+              <span>容器内路径</span>
+              <input value={setupPath} onChange={(event) => setSetupPath(event.target.value)} placeholder="/books" />
+            </label>
+            {setupStatus?.directoryRoots && setupStatus.directoryRoots.length > 0 && (
+              <div className="setupRootGrid">
+                {setupStatus.directoryRoots.map((root) => (
+                  <button
+                    type="button"
+                    key={root.path}
+                    className={setupPath === root.path ? "selected" : ""}
+                    onClick={() => selectSetupRoot(root)}
+                  >
+                    <strong>{root.name}</strong>
+                    <small>{root.path}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+            <label>
+              <span>资源类型</span>
+              <select value={setupAssetType} onChange={(event) => setSetupAssetType(event.target.value as LibraryAssetType)}>
+                <option value="mixed">{t.assetTypeMixed}</option>
+                <option value="comic">{t.assetTypeComic}</option>
+                <option value="book">{t.assetTypeBook}</option>
+                <option value="game">{t.assetTypeGame}</option>
+                <option value="video">{t.assetTypeVideo}</option>
+              </select>
+            </label>
+            <label>
+              <span>{t.scanWorkers}</span>
+              <input
+                type="number"
+                min="1"
+                max="8"
+                value={setupScanWorkers}
+                onChange={(event) => setSetupScanWorkers(clampScanWorkers(Number(event.target.value)))}
+              />
+            </label>
+            <p className="setupHint">
+              如果没有看到 NAS 目录，请先在 Docker compose 里把宿主机路径挂载到容器路径，例如 <code>/volume2/Books:/books:ro</code>。
+            </p>
+            {setupError && <span className="authError">{setupError}</span>}
+            <button disabled={(!setupPath.trim() && !setupStatus?.hasLibraries) || !setupToken.trim()}>
+              {setupStatus?.hasLibraries ? "Save setup" : "Initialize"}
+            </button>
+          </form>
+        </div>
+      )}
       {(!authChecked || authRequired) && (
         <div className="authOverlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
           <form className="authPanel" onSubmit={submitAuth}>
@@ -1586,7 +2018,7 @@ function BookShelf({
         {books.map((book) => (
           <button className="shelfBook" key={`${title}-${book.id}`} onClick={() => onOpen(book)} title={book.title}>
             <span className="shelfCover">
-              <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />
+              <BookCover book={book} />
               <span className="coverBadge">{book.format.toUpperCase()}</span>
             </span>
             <span>
@@ -1605,16 +2037,182 @@ function BookShelf({
   );
 }
 
+function BookCover({ book }: { book: Book }) {
+  if (book.format === "pdf") {
+    return (
+      <iframe
+        className="pdfCoverPreview"
+        title={`${book.title} cover`}
+        src={`/api/books/${book.id}/pages/0#toolbar=0&navpanes=0&scrollbar=0&page=1&view=FitH`}
+        loading="lazy"
+      />
+    );
+  }
+  return <img src={`/api/books/${book.id}/cover`} alt="" loading="lazy" />;
+}
+
+function PdfReader({
+  book,
+  pageIndex,
+  pageMode,
+  onPageCount,
+}: {
+  book: Book;
+  pageIndex: number;
+  pageMode: ReaderPageMode;
+  onPageCount: (count: number) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([]);
+  const [documentProxy, setDocumentProxy] = useState<PDFDocumentProxy | null>(null);
+  const [renderError, setRenderError] = useState("");
+  const [sizeTick, setSizeTick] = useState(0);
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => setSizeTick((value) => value + 1));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDocumentProxy(null);
+    setRenderError("");
+    const token = getAuthToken();
+    const task = getDocument({
+      url: `/api/books/${book.id}/pages/0`,
+      httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined,
+      withCredentials: true,
+    });
+
+    task.promise
+      .then((pdf) => {
+        if (cancelled) {
+          void pdf.destroy();
+          return;
+        }
+        setDocumentProxy(pdf);
+        onPageCount(pdf.numPages);
+      })
+      .catch((error) => {
+        if (!cancelled) setRenderError(error instanceof Error ? error.message : "PDF failed to load");
+      });
+
+    return () => {
+      cancelled = true;
+      void task.destroy();
+    };
+  }, [book.id]);
+
+  useEffect(() => {
+    if (!documentProxy || !containerRef.current) return;
+    let cancelled = false;
+    const pdf = documentProxy;
+    const container = containerRef.current;
+    const rect = container.getBoundingClientRect();
+    const gap = pageMode === "double" ? 18 : 0;
+    const pagesToRender = pdfVisiblePages(pageIndex, pdf.numPages, pageMode);
+    const slotWidth = Math.max(120, (rect.width - gap) / Math.max(1, pagesToRender.length));
+    const slotHeight = Math.max(160, rect.height);
+
+    async function render() {
+      try {
+        await Promise.all(
+          pagesToRender.map(async (pageNumber, index) => {
+            const canvas = canvasRefs.current[index];
+            if (!canvas) return;
+            const page = await pdf.getPage(pageNumber);
+            if (cancelled) return;
+            const baseViewport = page.getViewport({ scale: 1 });
+            const dpr = Math.max(1, window.devicePixelRatio || 1);
+            const cssScale = Math.min(slotWidth / baseViewport.width, slotHeight / baseViewport.height);
+            const viewport = page.getViewport({ scale: cssScale * dpr });
+            canvas.width = Math.floor(viewport.width);
+            canvas.height = Math.floor(viewport.height);
+            canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
+            canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
+            const context = canvas.getContext("2d");
+            if (!context) return;
+            await page.render({ canvasContext: context, viewport }).promise;
+          }),
+        );
+        if (!cancelled) setRenderError("");
+      } catch (error) {
+        if (!cancelled) setRenderError(error instanceof Error ? error.message : "PDF page failed to render");
+      }
+    }
+
+    void render();
+    return () => {
+      cancelled = true;
+    };
+  }, [documentProxy, pageIndex, pageMode, sizeTick]);
+
+  const pages = documentProxy ? pdfVisiblePages(pageIndex, documentProxy.numPages, pageMode) : [];
+
+  return (
+    <div ref={containerRef} className={`pdfReader ${pageMode}`}>
+      {renderError && <div className="pdfReaderError">{renderError}</div>}
+      {pages.map((pageNumber, index) => (
+        <canvas
+          key={`${book.id}-${pageNumber}`}
+          ref={(node) => {
+            canvasRefs.current[index] = node;
+          }}
+          aria-label={`PDF page ${pageNumber}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function pdfVisiblePages(index: number, total: number, mode: ReaderPageMode) {
+  const first = Math.max(1, Math.min(total, index + 1));
+  if (mode === "single") return [first];
+  return [first, first + 1].filter((page) => page >= 1 && page <= total);
+}
+
+function CatalogPage({
+  title,
+  subtitle,
+  countLabel,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  countLabel: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="catalogPage">
+      <div className="catalogHeader">
+        <div>
+          <h1>{title}</h1>
+          <small>{subtitle}</small>
+        </div>
+        <span>{countLabel}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function GameShelf({
   title,
   subtitle,
   games,
   meta,
+  moreLabel,
+  onMore,
 }: {
   title: string;
   subtitle: string;
   games: GameAsset[];
   meta: (game: GameAsset) => string;
+  moreLabel: string;
+  onMore: () => void;
 }) {
   const sortedGames = [...games].sort(compareGamesByPlatform);
 
@@ -1625,6 +2223,7 @@ function GameShelf({
           <h1>{title}</h1>
           <small>{subtitle}</small>
         </div>
+        <button type="button" className="textButton" onClick={onMore}>{moreLabel}</button>
       </div>
       <div className="shelfScroller">
         {sortedGames.map((game) => (
@@ -1651,6 +2250,64 @@ function GameTile({ game, meta, className = "book" }: { game: GameAsset; meta: s
       <small>{meta}</small>
     </button>
   );
+}
+
+function VideoShelf({
+  title,
+  subtitle,
+  videos,
+  meta,
+  onOpen,
+  moreLabel,
+  onMore,
+}: {
+  title: string;
+  subtitle: string;
+  videos: VideoAsset[];
+  meta: (video: VideoAsset) => string;
+  onOpen: (video: VideoAsset) => void;
+  moreLabel: string;
+  onMore: () => void;
+}) {
+  return (
+    <div className="bookShelf videoShelf">
+      <div className="bookShelfHeader">
+        <div>
+          <h1>{title}</h1>
+          <small>{subtitle}</small>
+        </div>
+        <button type="button" className="textButton" onClick={onMore}>{moreLabel}</button>
+      </div>
+      <div className="shelfScroller">
+        {videos.map((video) => (
+          <VideoTile className="shelfBook" key={`video-${video.id}`} video={video} meta={meta(video)} onOpen={onOpen} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function VideoTile({ video, meta, onOpen, className = "book" }: { video: VideoAsset; meta: string; onOpen: (video: VideoAsset) => void; className?: string }) {
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+
+  return (
+    <button className={`${className} videoCard`} title={video.title} onClick={() => onOpen(video)}>
+      <span className="shelfCover videoCover">
+        {!thumbnailFailed && <img src={video.thumbnailUrl} alt="" loading="lazy" onError={() => setThumbnailFailed(true)} />}
+        <span className="videoCoverFallback">
+          <em>Now Showing</em>
+          <strong>{video.title}</strong>
+        </span>
+        <span className="videoCoverFormat">{video.format.toUpperCase()}</span>
+      </span>
+      <strong>{video.title}</strong>
+      <small>{meta}</small>
+    </button>
+  );
+}
+
+function compareVideosByTitle(a: VideoAsset, b: VideoAsset) {
+  return a.title.localeCompare(b.title, undefined, { sensitivity: "base", numeric: true });
 }
 
 function compareGamesByPlatform(a: GameAsset, b: GameAsset) {
@@ -1709,11 +2366,12 @@ function gamePlatformLabel(game: GameAsset) {
 }
 
 function collectionCountLabel(item: Series) {
+  if (item.primaryType === "video") return `${item.bookCount} videos`;
   return item.collectionType === "game_platform" ? `${item.bookCount} games` : `${item.bookCount} volumes`;
 }
 
 function collectionKind(item: Series, libraries: Library[]) {
-  if (item.primaryType === "book" || item.primaryType === "comic" || item.primaryType === "game") {
+  if (item.primaryType === "book" || item.primaryType === "comic" || item.primaryType === "game" || item.primaryType === "video") {
     return item.primaryType;
   }
   if (item.collectionType === "game_platform") return "game";
@@ -1722,9 +2380,15 @@ function collectionKind(item: Series, libraries: Library[]) {
   return "comic";
 }
 
-function loadedCollectionCountLabel(item: Series, bookCount: number, gameCount: number) {
+function loadedCollectionCountLabel(item: Series, bookCount: number, gameCount: number, videoCount: number) {
+  if (item.primaryType === "video") {
+    return `${videoCount} videos`;
+  }
   if (item.collectionType === "game_platform") {
     return `${gameCount} games`;
+  }
+  if (videoCount > 0) {
+    return `${bookCount} volumes · ${videoCount} videos`;
   }
   if (gameCount > 0) {
     return `${bookCount} volumes · ${gameCount} games`;
@@ -1977,7 +2641,7 @@ type Translation = typeof translations.en;
 const translations = {
   zh: {
     language: "语言",
-    library: "书库",
+    library: "首页",
     reader: "阅读器",
     jobs: "任务",
     errors: "错误",
@@ -1999,19 +2663,48 @@ const translations = {
     wantSubtitle: "稍后再读",
     gameShelf: "游戏库",
     gameShelfSubtitle: "本地 ROM 与 ROM set",
+    gameCatalogSubtitle: "按机种排序的完整游戏列表",
+    videoShelf: "视频库",
+    videoShelfSubtitle: "本地视频文件与空间媒体入口",
+    videoCoverHint: "自定义封面可放在视频同目录：同名 .jpg/.png，或 poster.jpg / cover.jpg。",
+    videoTranscodeHint: "该视频会按需转码为 HLS 播放，首次打开可能需要等待几秒。",
+    videoTranscodeStatusFailed: "转码状态读取失败",
+    videoTranscodeSegments: (count: number) => `${count} 个片段`,
+    videoCurrentTranscode: (title: string) => `当前正在转码：${title}`,
+    videoReloadPlayback: "重新加载播放",
+    videoTranscodeStatusLabels: {
+      idle: "等待转码",
+      starting: "转码启动中",
+      running: "转码中",
+      queued: "等待当前转码完成",
+      ready: "已缓存",
+      failed: "转码失败",
+    },
+    more: "更多",
+    loadingGames: "正在加载游戏",
+    loadingVideos: "正在加载视频",
+    loadMore: "加载更多",
+    catalogLoadedCount: (loaded: number, total: number) => total > 0 ? `${loaded} / ${total} 个条目` : `${loaded} 个条目`,
+    gameCount: (count: number) => `${count} 个游戏`,
+    videoCount: (count: number) => `${count} 个视频`,
     recentSubtitle: "最近入库",
     libraryAssetType: "目录类型",
     assetTypeMixed: "自动",
     assetTypeBook: "书籍",
     assetTypeComic: "漫画",
     assetTypeGame: "游戏",
+    assetTypeVideo: "视频",
     comicCollections: "漫画",
     bookCollections: "书籍",
     gameCollections: "游戏",
+    videoCollections: "视频",
     libraries: "资源目录",
     name: "名称",
     add: "添加",
     scan: "扫描",
+    scanWorkers: "扫描 Worker",
+    scanWorkersHint: "新扫描任务使用的并发数量，NAS 建议 2-4，高性能机器可调到 8。",
+    scanWorkersSaved: (count: number) => `扫描 Worker 已保存为 ${count}`,
     pause: "暂停",
     resume: "恢复",
     cancel: "取消",
@@ -2095,7 +2788,7 @@ const translations = {
   },
   zht: {
     language: "語言",
-    library: "書庫",
+    library: "首頁",
     reader: "閱讀器",
     jobs: "任務",
     errors: "錯誤",
@@ -2117,19 +2810,48 @@ const translations = {
     wantSubtitle: "稍後再讀",
     gameShelf: "遊戲庫",
     gameShelfSubtitle: "本地 ROM 與 ROM set",
+    gameCatalogSubtitle: "依機種排序的完整遊戲列表",
+    videoShelf: "影片庫",
+    videoShelfSubtitle: "本地影片檔與空間媒體入口",
+    videoCoverHint: "自訂封面可放在影片同目錄：同名 .jpg/.png，或 poster.jpg / cover.jpg。",
+    videoTranscodeHint: "此影片會按需轉碼為 HLS 播放，首次開啟可能需要等待幾秒。",
+    videoTranscodeStatusFailed: "轉碼狀態讀取失敗",
+    videoTranscodeSegments: (count: number) => `${count} 個片段`,
+    videoCurrentTranscode: (title: string) => `目前正在轉碼：${title}`,
+    videoReloadPlayback: "重新載入播放",
+    videoTranscodeStatusLabels: {
+      idle: "等待轉碼",
+      starting: "轉碼啟動中",
+      running: "轉碼中",
+      queued: "等待目前轉碼完成",
+      ready: "已快取",
+      failed: "轉碼失敗",
+    },
+    more: "更多",
+    loadingGames: "正在載入遊戲",
+    loadingVideos: "正在載入影片",
+    loadMore: "載入更多",
+    catalogLoadedCount: (loaded: number, total: number) => total > 0 ? `${loaded} / ${total} 個項目` : `${loaded} 個項目`,
+    gameCount: (count: number) => `${count} 個遊戲`,
+    videoCount: (count: number) => `${count} 個影片`,
     recentSubtitle: "最近入庫",
     libraryAssetType: "目錄類型",
     assetTypeMixed: "自動",
     assetTypeBook: "書籍",
     assetTypeComic: "漫畫",
     assetTypeGame: "遊戲",
+    assetTypeVideo: "影片",
     comicCollections: "漫畫",
     bookCollections: "書籍",
     gameCollections: "遊戲",
+    videoCollections: "影片",
     libraries: "資源目錄",
     name: "名稱",
     add: "新增",
     scan: "掃描",
+    scanWorkers: "掃描 Worker",
+    scanWorkersHint: "新掃描任務使用的並發數量，NAS 建議 2-4，高效能機器可調到 8。",
+    scanWorkersSaved: (count: number) => `掃描 Worker 已儲存為 ${count}`,
     pause: "暫停",
     resume: "恢復",
     cancel: "取消",
@@ -2213,7 +2935,7 @@ const translations = {
   },
   en: {
     language: "Language",
-    library: "Library",
+    library: "Home",
     reader: "Reader",
     jobs: "Jobs",
     errors: "Errors",
@@ -2235,19 +2957,48 @@ const translations = {
     wantSubtitle: "Queued for later",
     gameShelf: "Game Shelf",
     gameShelfSubtitle: "Local ROMs and ROM sets",
+    gameCatalogSubtitle: "Full game catalog grouped by platform",
+    videoShelf: "Video Shelf",
+    videoShelfSubtitle: "Local video files and spatial media entry points",
+    videoCoverHint: "Custom covers can sit next to the video as matching .jpg/.png, poster.jpg, or cover.jpg.",
+    videoTranscodeHint: "This video will be transcoded to HLS on demand. First playback may take a few seconds.",
+    videoTranscodeStatusFailed: "Failed to read transcode status",
+    videoTranscodeSegments: (count: number) => `${count} segments`,
+    videoCurrentTranscode: (title: string) => `Currently transcoding: ${title}`,
+    videoReloadPlayback: "Reload playback",
+    videoTranscodeStatusLabels: {
+      idle: "Waiting to transcode",
+      starting: "Starting transcode",
+      running: "Transcoding",
+      queued: "Waiting for current transcode",
+      ready: "Cached",
+      failed: "Transcode failed",
+    },
+    more: "More",
+    loadingGames: "Loading games",
+    loadingVideos: "Loading videos",
+    loadMore: "Load more",
+    catalogLoadedCount: (loaded: number, total: number) => total > 0 ? `${loaded} / ${total} items` : `${loaded} items`,
+    gameCount: (count: number) => `${count} games`,
+    videoCount: (count: number) => `${count} videos`,
     recentSubtitle: "Newest indexed volumes",
     libraryAssetType: "Library type",
     assetTypeMixed: "Auto",
     assetTypeBook: "Books",
     assetTypeComic: "Comics",
     assetTypeGame: "Games",
+    assetTypeVideo: "Videos",
     comicCollections: "Comics",
     bookCollections: "Books",
     gameCollections: "Games",
+    videoCollections: "Videos",
     libraries: "Resource Directories",
     name: "Name",
     add: "Add",
     scan: "Scan",
+    scanWorkers: "Scan workers",
+    scanWorkersHint: "Concurrent workers for new scan jobs. NAS defaults work well at 2-4; faster machines can use 8.",
+    scanWorkersSaved: (count: number) => `Scan workers saved as ${count}`,
     pause: "Pause",
     resume: "Resume",
     cancel: "Cancel",
@@ -2331,7 +3082,7 @@ const translations = {
   },
   ja: {
     language: "言語",
-    library: "ライブラリ",
+    library: "ホーム",
     reader: "リーダー",
     jobs: "ジョブ",
     errors: "エラー",
@@ -2353,19 +3104,48 @@ const translations = {
     wantSubtitle: "あとで読む",
     gameShelf: "ゲーム棚",
     gameShelfSubtitle: "ローカル ROM と ROM set",
+    gameCatalogSubtitle: "プラットフォーム順のゲーム一覧",
+    videoShelf: "ビデオ棚",
+    videoShelfSubtitle: "ローカル動画と空間メディアの入口",
+    videoCoverHint: "カスタムカバーは動画と同じフォルダに同名 .jpg/.png、poster.jpg、cover.jpg として置けます。",
+    videoTranscodeHint: "このビデオは必要に応じて HLS に変換されます。初回再生には数秒かかる場合があります。",
+    videoTranscodeStatusFailed: "変換状態の取得に失敗しました",
+    videoTranscodeSegments: (count: number) => `${count} セグメント`,
+    videoCurrentTranscode: (title: string) => `現在変換中：${title}`,
+    videoReloadPlayback: "再読み込み",
+    videoTranscodeStatusLabels: {
+      idle: "変換待ち",
+      starting: "変換を開始中",
+      running: "変換中",
+      queued: "現在の変換を待機中",
+      ready: "キャッシュ済み",
+      failed: "変換失敗",
+    },
+    more: "もっと見る",
+    loadingGames: "ゲームを読み込み中",
+    loadingVideos: "ビデオを読み込み中",
+    loadMore: "さらに読み込む",
+    catalogLoadedCount: (loaded: number, total: number) => total > 0 ? `${loaded} / ${total} 件` : `${loaded} 件`,
+    gameCount: (count: number) => `${count} 件のゲーム`,
+    videoCount: (count: number) => `${count} 件のビデオ`,
     recentSubtitle: "最近追加",
     libraryAssetType: "ライブラリ種別",
     assetTypeMixed: "自動",
     assetTypeBook: "書籍",
     assetTypeComic: "漫画",
     assetTypeGame: "ゲーム",
+    assetTypeVideo: "ビデオ",
     comicCollections: "漫画",
     bookCollections: "書籍",
     gameCollections: "ゲーム",
+    videoCollections: "ビデオ",
     libraries: "リソース",
     name: "名前",
     add: "追加",
     scan: "スキャン",
+    scanWorkers: "スキャン Worker",
+    scanWorkersHint: "新しいスキャンで使う並列数です。NAS は 2-4、高性能な環境では 8 まで使えます。",
+    scanWorkersSaved: (count: number) => `スキャン Worker を ${count} に保存しました`,
     pause: "一時停止",
     resume: "再開",
     cancel: "キャンセル",
@@ -2449,7 +3229,7 @@ const translations = {
   },
   ko: {
     language: "언어",
-    library: "라이브러리",
+    library: "홈",
     reader: "리더",
     jobs: "작업",
     errors: "오류",
@@ -2471,19 +3251,48 @@ const translations = {
     wantSubtitle: "나중에 읽기",
     gameShelf: "게임 선반",
     gameShelfSubtitle: "로컬 ROM 및 ROM set",
+    gameCatalogSubtitle: "플랫폼별 전체 게임 목록",
+    videoShelf: "비디오 선반",
+    videoShelfSubtitle: "로컬 비디오 파일과 공간 미디어 진입점",
+    videoCoverHint: "사용자 지정 표지는 비디오와 같은 폴더에 같은 이름의 .jpg/.png, poster.jpg, cover.jpg로 둘 수 있습니다.",
+    videoTranscodeHint: "이 비디오는 필요할 때 HLS로 변환됩니다. 처음 재생할 때 몇 초 걸릴 수 있습니다.",
+    videoTranscodeStatusFailed: "변환 상태를 읽지 못했습니다",
+    videoTranscodeSegments: (count: number) => `${count}개 세그먼트`,
+    videoCurrentTranscode: (title: string) => `현재 변환 중: ${title}`,
+    videoReloadPlayback: "재생 다시 불러오기",
+    videoTranscodeStatusLabels: {
+      idle: "변환 대기",
+      starting: "변환 시작 중",
+      running: "변환 중",
+      queued: "현재 변환 완료 대기",
+      ready: "캐시됨",
+      failed: "변환 실패",
+    },
+    more: "더 보기",
+    loadingGames: "게임 불러오는 중",
+    loadingVideos: "비디오 불러오는 중",
+    loadMore: "더 불러오기",
+    catalogLoadedCount: (loaded: number, total: number) => total > 0 ? `${loaded} / ${total}개 항목` : `${loaded}개 항목`,
+    gameCount: (count: number) => `${count}개 게임`,
+    videoCount: (count: number) => `${count}개 비디오`,
     recentSubtitle: "최근 인덱싱된 항목",
     libraryAssetType: "라이브러리 유형",
     assetTypeMixed: "자동",
     assetTypeBook: "도서",
     assetTypeComic: "만화",
     assetTypeGame: "게임",
+    assetTypeVideo: "비디오",
     comicCollections: "만화",
     bookCollections: "도서",
     gameCollections: "게임",
+    videoCollections: "비디오",
     libraries: "리소스",
     name: "이름",
     add: "추가",
     scan: "스캔",
+    scanWorkers: "스캔 Worker",
+    scanWorkersHint: "새 스캔 작업의 동시 실행 수입니다. NAS는 2-4, 고성능 장비는 8까지 사용할 수 있습니다.",
+    scanWorkersSaved: (count: number) => `스캔 Worker가 ${count}(으)로 저장됨`,
     pause: "일시정지",
     resume: "재개",
     cancel: "취소",
@@ -2586,6 +3395,16 @@ function writeLocalPreferences(preferences: ClientPreferences) {
   writeLocalStorage("foliospace_locale", normalized.locale);
 }
 
+function clampScanWorkers(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(8, Math.round(value)));
+}
+
+function readerTotalPages(book: Book, archivePages: number, pdfPages: number) {
+  if (book.format === "pdf") return pdfPages;
+  return archivePages;
+}
+
 function readLocalStorage(key: string) {
   try {
     return window.localStorage.getItem(key);
@@ -2634,6 +3453,15 @@ function isLocale(value: string | null | undefined): value is Locale {
 
 function arrayOrEmpty<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : [];
+}
+
+function mergeByID<T extends { id: number }>(current: T[], incoming: T[]) {
+  const seen = new Set<number>();
+  return [...current, ...incoming].filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 }
 
 function emptyPrivateState(): BookPrivateState {
@@ -2727,6 +3555,42 @@ function gameMeta(game: GameAsset, t: Translation) {
     .join(" · ") || t.assetTypeGame;
 }
 
+function videoMeta(video: VideoAsset, t: Translation) {
+  const parts = [video.format.toUpperCase()];
+  if (video.width > 0 && video.height > 0) {
+    parts.push(`${video.width}x${video.height}`);
+  }
+  if (video.durationSeconds > 0) {
+    parts.push(formatDuration(video.durationSeconds));
+  }
+  return parts.join(" · ") || t.assetTypeVideo;
+}
+
+function videoTranscodeLabel(status: VideoTranscodeStatus | null, t: Translation) {
+  const current = status?.status || "idle";
+  const label = t.videoTranscodeStatusLabels[current];
+  if (!status || status.segmentCount <= 0) {
+    return label;
+  }
+  return `${label} · ${t.videoTranscodeSegments(status.segmentCount)}`;
+}
+
+function videoPlaybackSource(video: VideoAsset) {
+  if (video.playbackMode === "hls") {
+    return video.hlsUrl || `/api/client/videos/${video.id}/hls/index.m3u8`;
+  }
+  return video.fileUrl || `/api/client/videos/${video.id}/file`;
+}
+
+function formatDuration(seconds: number) {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
 function libraryAssetTypeLabel(value: string | undefined, t: Translation) {
   switch (value) {
     case "book":
@@ -2735,6 +3599,8 @@ function libraryAssetTypeLabel(value: string | undefined, t: Translation) {
       return t.assetTypeComic;
     case "game":
       return t.assetTypeGame;
+    case "video":
+      return t.assetTypeVideo;
     default:
       return t.assetTypeMixed;
   }

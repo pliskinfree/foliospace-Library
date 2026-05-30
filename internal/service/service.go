@@ -1,14 +1,22 @@
 package service
 
 import (
+	"context"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"foliospace-reader/internal/archive"
@@ -23,20 +31,170 @@ type Service struct {
 	configDir string
 }
 
+const adminTokenHashSetting = "admin_token_sha256"
+const scanWorkersSetting = "scan_workers"
+
+var errVideoTranscodeBusy = errors.New("another video transcode is running")
+
+var videoTranscodeState = struct {
+	sync.Mutex
+	videoID int64
+	dir     string
+}{}
+
+var videoThumbnailState = struct {
+	sync.Mutex
+	cond   *sync.Cond
+	active bool
+}{}
+
+type VideoTranscodeStatus struct {
+	VideoID      int64  `json:"videoId"`
+	Status       string `json:"status"`
+	Message      string `json:"message,omitempty"`
+	SegmentCount int    `json:"segmentCount"`
+}
+
+type VideoTranscodeQueueStatus struct {
+	Status        string `json:"status"`
+	ActiveVideoID int64  `json:"activeVideoId,omitempty"`
+	ActiveTitle   string `json:"activeTitle,omitempty"`
+	SegmentCount  int    `json:"segmentCount"`
+	Message       string `json:"message,omitempty"`
+}
+
+func IsVideoTranscodeBusy(err error) bool {
+	return errors.Is(err, errVideoTranscodeBusy)
+}
+
+type SetupStatus struct {
+	Initialized     bool                    `json:"initialized"`
+	AuthEnabled     bool                    `json:"authEnabled"`
+	HasLibraries    bool                    `json:"hasLibraries"`
+	TokenConfigured bool                    `json:"tokenConfigured"`
+	DirectoryRoots  []domain.DirectoryEntry `json:"directoryRoots"`
+	ScanWorkers     int                     `json:"scanWorkers"`
+}
+
+type SetupInput struct {
+	Token       string `json:"token"`
+	Name        string `json:"name"`
+	RootPath    string `json:"rootPath"`
+	AssetType   string `json:"assetType"`
+	ScanWorkers int    `json:"scanWorkers"`
+}
+
+type ScanSettings struct {
+	ScanWorkers int `json:"scanWorkers"`
+}
+
 func New(store *store.Store) *Service {
 	return NewWithConfig(store, "")
 }
 
 func NewWithConfig(store *store.Store, configDir string) *Service {
 	return &Service{
-		store:     store,
-		scanner:   scanner.New(store),
+		store: store,
+		scanner: scanner.NewWithWorkerCount(store, func() int {
+			return scanWorkerCountFromStore(store)
+		}),
 		configDir: strings.TrimSpace(configDir),
 	}
 }
 
 func (s *Service) CreateLibrary(name string, rootPath string) (domain.Library, error) {
 	return s.CreateLibraryWithType(name, rootPath, "mixed")
+}
+
+func (s *Service) SetupStatus(envTokenConfigured bool) (SetupStatus, error) {
+	libraries, err := s.ListLibraries()
+	if err != nil {
+		return SetupStatus{}, err
+	}
+	roots, err := s.DirectoryRoots()
+	if err != nil {
+		return SetupStatus{}, err
+	}
+	tokenConfigured := envTokenConfigured || s.AdminTokenConfigured()
+	hasLibraries := len(libraries) > 0
+	return SetupStatus{
+		Initialized:     tokenConfigured && hasLibraries,
+		AuthEnabled:     tokenConfigured,
+		HasLibraries:    hasLibraries,
+		TokenConfigured: tokenConfigured,
+		DirectoryRoots:  roots,
+		ScanWorkers:     s.ScanWorkerCount(),
+	}, nil
+}
+
+func (s *Service) InitializeSetup(input SetupInput, tokenAlreadyConfigured bool) (domain.Library, error) {
+	token := strings.TrimSpace(input.Token)
+	if token == "" && !tokenAlreadyConfigured {
+		return domain.Library{}, fmt.Errorf("access token is required")
+	}
+	if token != "" {
+		if err := s.SetAdminToken(token); err != nil {
+			return domain.Library{}, err
+		}
+	}
+	if input.ScanWorkers > 0 {
+		if err := s.SaveScanSettings(ScanSettings{ScanWorkers: input.ScanWorkers}); err != nil {
+			return domain.Library{}, err
+		}
+	}
+	if strings.TrimSpace(input.RootPath) == "" {
+		libraries, err := s.ListLibraries()
+		if err != nil {
+			return domain.Library{}, err
+		}
+		if len(libraries) > 0 {
+			return libraries[0], nil
+		}
+	}
+	return s.CreateLibraryWithType(input.Name, input.RootPath, input.AssetType)
+}
+
+func (s *Service) ScanSettings() ScanSettings {
+	return ScanSettings{ScanWorkers: s.ScanWorkerCount()}
+}
+
+func (s *Service) SaveScanSettings(settings ScanSettings) error {
+	workers := scanner.NormalizeWorkerCount(fmt.Sprintf("%d", settings.ScanWorkers))
+	return s.store.UpsertSetting(scanWorkersSetting, fmt.Sprintf("%d", workers))
+}
+
+func (s *Service) ScanWorkerCount() int {
+	return scanWorkerCountFromStore(s.store)
+}
+
+func scanWorkerCountFromStore(st *store.Store) int {
+	if value, err := st.Setting(scanWorkersSetting); err == nil && strings.TrimSpace(value) != "" {
+		return scanner.NormalizeWorkerCount(value)
+	}
+	return scanner.NormalizeWorkerCount(os.Getenv("FOLIOSPACE_SCAN_WORKERS"))
+}
+
+func (s *Service) AdminTokenConfigured() bool {
+	hash, err := s.store.Setting(adminTokenHashSetting)
+	return err == nil && strings.TrimSpace(hash) != ""
+}
+
+func (s *Service) SetAdminToken(token string) error {
+	token = strings.TrimSpace(token)
+	if len(token) < 8 {
+		return fmt.Errorf("access token must be at least 8 characters")
+	}
+	sum := sha256.Sum256([]byte(token))
+	return s.store.UpsertSetting(adminTokenHashSetting, hex.EncodeToString(sum[:]))
+}
+
+func (s *Service) VerifyAdminToken(token string) bool {
+	hash, err := s.store.Setting(adminTokenHashSetting)
+	if err != nil || strings.TrimSpace(hash) == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return subtle.ConstantTimeCompare([]byte(strings.TrimSpace(hash)), []byte(hex.EncodeToString(sum[:]))) == 1
 }
 
 func (s *Service) CreateLibraryWithType(name string, rootPath string, assetType string) (domain.Library, error) {
@@ -53,7 +211,7 @@ func (s *Service) CreateLibraryWithType(name string, rootPath string, assetType 
 
 func (s *Service) ListDirectories(path string) (domain.DirectoryListing, error) {
 	path = strings.TrimSpace(path)
-	roots, err := s.directoryRoots()
+	roots, err := s.DirectoryRoots()
 	if err != nil {
 		return domain.DirectoryListing{}, err
 	}
@@ -104,7 +262,7 @@ func (s *Service) ListDirectories(path string) (domain.DirectoryListing, error) 
 	return domain.DirectoryListing{Path: path, Parent: parent, Entries: entries}, nil
 }
 
-func (s *Service) directoryRoots() ([]domain.DirectoryEntry, error) {
+func (s *Service) DirectoryRoots() ([]domain.DirectoryEntry, error) {
 	candidates := []string{os.Getenv("FOLIOSPACE_LIBRARY_DIR")}
 	candidates = append(candidates, strings.Split(os.Getenv("FOLIOSPACE_DIRECTORY_ROOTS"), ",")...)
 	candidates = append(candidates, "/library", "/games")
@@ -183,7 +341,7 @@ func directoryRootName(path string) string {
 }
 
 func normalizeLibraryAssetType(value string) string {
-	if oneOf(value, "mixed", "book", "comic", "game") {
+	if oneOf(value, "mixed", "book", "comic", "game", "video") {
 		return value
 	}
 	return "mixed"
@@ -340,12 +498,64 @@ func (s *Service) RecentGames(limit int) ([]domain.GameAsset, error) {
 	return s.store.ListRecentGames(limit)
 }
 
+func (s *Service) RecentVideos(limit int) ([]domain.VideoAsset, error) {
+	return s.store.ListRecentVideos(limit)
+}
+
 func (s *Service) ListGamesPage(options domain.GameListOptions) (domain.GameListPage, error) {
 	return s.store.ListGamesPage(options)
 }
 
+func (s *Service) ListVideosPage(options domain.VideoListOptions) (domain.VideoListPage, error) {
+	return s.store.ListVideosPage(options)
+}
+
 func (s *Service) Game(id int64) (domain.GameAsset, error) {
 	return s.store.GameByID(id)
+}
+
+func (s *Service) Video(id int64) (domain.VideoAsset, error) {
+	return s.store.VideoByID(id)
+}
+
+func (s *Service) OpenVideoThumbnail(id int64) (PageStream, error) {
+	video, err := s.store.VideoByID(id)
+	if err != nil {
+		return PageStream{}, err
+	}
+	if video.FilePath == "" {
+		return PageStream{}, fmt.Errorf("video has no indexed file")
+	}
+	for _, candidate := range localVideoThumbnailCandidates(video.FilePath) {
+		if file, contentType, err := openImageFile(candidate); err == nil {
+			return PageStream{Body: file, ContentType: contentType}, nil
+		}
+	}
+	cachePath, err := s.videoThumbnailCachePath(video)
+	if err != nil {
+		return PageStream{}, err
+	}
+	if file, err := os.Open(cachePath); err == nil {
+		return PageStream{Body: file, ContentType: "image/jpeg"}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if !claimVideoThumbnail(ctx) {
+		return PageStream{}, fmt.Errorf("video thumbnail extraction is busy")
+	}
+	defer releaseVideoThumbnail()
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		return PageStream{}, err
+	}
+	if err := extractVideoThumbnail(video.FilePath, cachePath, video.DurationSeconds); err != nil {
+		_ = os.Remove(cachePath)
+		return PageStream{}, err
+	}
+	file, err := os.Open(cachePath)
+	if err != nil {
+		return PageStream{}, err
+	}
+	return PageStream{Body: file, ContentType: "image/jpeg"}, nil
 }
 
 func (s *Service) OpenGameCover(id int64) (PageStream, error) {
@@ -387,6 +597,16 @@ func (s *Service) gameCoverCachePath(id int64) (string, error) {
 	return filepath.Join(base, "cache", "game-covers", fmt.Sprintf("%d.png", id)), nil
 }
 
+func (s *Service) videoThumbnailCachePath(video domain.VideoAsset) (string, error) {
+	base := s.configDir
+	if base == "" {
+		base = filepath.Join(os.TempDir(), "foliospace-reader")
+	}
+	keySource := fmt.Sprintf("%d|%s|%d|%s", video.ID, video.FilePath, video.Size, video.MTime.Format(time.RFC3339Nano))
+	sum := sha256.Sum256([]byte(keySource))
+	return filepath.Join(base, "cache", "video-thumbnails", fmt.Sprintf("%d-%s.jpg", video.ID, hex.EncodeToString(sum[:])[:12])), nil
+}
+
 func (s *Service) OpenGameFile(id int64) (PageStream, error) {
 	game, err := s.store.GameByID(id)
 	if err != nil {
@@ -400,6 +620,254 @@ func (s *Service) OpenGameFile(id int64) (PageStream, error) {
 		return PageStream{}, err
 	}
 	return PageStream{Body: body, ContentType: "application/octet-stream"}, nil
+}
+
+func (s *Service) VideoFilePath(id int64) (string, error) {
+	video, err := s.store.VideoByID(id)
+	if err != nil {
+		return "", err
+	}
+	if video.FilePath == "" {
+		return "", fmt.Errorf("video has no indexed file")
+	}
+	return video.FilePath, nil
+}
+
+func (s *Service) EnsureVideoHLS(id int64) (string, error) {
+	video, err := s.store.VideoByID(id)
+	if err != nil {
+		return "", err
+	}
+	if video.FilePath == "" {
+		return "", fmt.Errorf("video has no indexed file")
+	}
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return "", fmt.Errorf("ffmpeg is not installed")
+	}
+	dir, err := s.videoTranscodeCacheDir(video)
+	if err != nil {
+		return "", err
+	}
+	playlist := filepath.Join(dir, "index.m3u8")
+	if fileExists(playlist) {
+		return playlist, nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	alreadyRunning := currentVideoTranscode(id, dir)
+	if !claimVideoTranscode(id, dir) {
+		return "", errVideoTranscodeBusy
+	}
+	startedPath := filepath.Join(dir, ".started")
+	if !alreadyRunning {
+		if err := os.WriteFile(startedPath, []byte(time.Now().Format(time.RFC3339)), 0o644); err != nil {
+			releaseVideoTranscode(id, dir)
+			return "", err
+		}
+		if err := startVideoHLSTranscode(id, video.FilePath, dir); err != nil {
+			releaseVideoTranscode(id, dir)
+			return "", err
+		}
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if fileExists(playlist) {
+			return playlist, nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return "", fmt.Errorf("video transcode is starting")
+}
+
+func (s *Service) VideoTranscodeStatus(id int64) (VideoTranscodeStatus, error) {
+	video, err := s.store.VideoByID(id)
+	if err != nil {
+		return VideoTranscodeStatus{}, err
+	}
+	dir, err := s.videoTranscodeCacheDir(video)
+	if err != nil {
+		return VideoTranscodeStatus{}, err
+	}
+	status := VideoTranscodeStatus{VideoID: id}
+	playlist := filepath.Join(dir, "index.m3u8")
+	status.SegmentCount = countHLSSegments(dir)
+	switch {
+	case fileExists(playlist):
+		status.Status = "ready"
+		status.Message = "HLS cache is ready"
+	case currentVideoTranscode(id, dir):
+		status.Status = "running"
+		status.Message = "Transcoding to browser-compatible HLS"
+	case otherVideoTranscodeActive():
+		status.Status = "queued"
+		status.Message = "Waiting for the current video transcode to finish"
+	case transcodeLogLooksFailed(filepath.Join(dir, "ffmpeg.log")):
+		status.Status = "failed"
+		status.Message = "Transcode failed; see ffmpeg.log"
+	case fileExists(filepath.Join(dir, ".started")):
+		status.Status = "starting"
+		status.Message = "Transcode is starting"
+	default:
+		status.Status = "idle"
+		status.Message = "Transcode has not started"
+	}
+	return status, nil
+}
+
+func (s *Service) VideoTranscodeQueueStatus() (VideoTranscodeQueueStatus, error) {
+	videoID, dir := activeVideoTranscode()
+	if videoID == 0 || dir == "" {
+		return VideoTranscodeQueueStatus{Status: "idle", Message: "No active video transcode"}, nil
+	}
+	status := VideoTranscodeQueueStatus{
+		Status:        "running",
+		ActiveVideoID: videoID,
+		SegmentCount:  countHLSSegments(dir),
+		Message:       "Transcoding to browser-compatible HLS",
+	}
+	video, err := s.store.VideoByID(videoID)
+	if err == nil {
+		status.ActiveTitle = video.Title
+	}
+	return status, nil
+}
+
+func (s *Service) VideoHLSFilePath(id int64, name string) (string, error) {
+	video, err := s.store.VideoByID(id)
+	if err != nil {
+		return "", err
+	}
+	dir, err := s.videoTranscodeCacheDir(video)
+	if err != nil {
+		return "", err
+	}
+	cleanName := filepath.Base(strings.TrimSpace(name))
+	if cleanName != name || cleanName == "." || cleanName == string(filepath.Separator) {
+		return "", fmt.Errorf("invalid hls segment path")
+	}
+	switch filepath.Ext(cleanName) {
+	case ".m3u8", ".ts":
+	default:
+		return "", fmt.Errorf("invalid hls segment extension")
+	}
+	path := filepath.Join(dir, cleanName)
+	if !strings.HasPrefix(path, dir+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid hls segment path")
+	}
+	return path, nil
+}
+
+func (s *Service) videoTranscodeCacheDir(video domain.VideoAsset) (string, error) {
+	base := s.configDir
+	if base == "" {
+		base = os.TempDir()
+	}
+	keySource := fmt.Sprintf("%d|%s|%d|%s", video.ID, video.FilePath, video.Size, video.MTime.Format(time.RFC3339Nano))
+	sum := sha256.Sum256([]byte(keySource))
+	return filepath.Join(base, "cache", "video-transcodes", fmt.Sprintf("%d-%s", video.ID, hex.EncodeToString(sum[:])[:12])), nil
+}
+
+func startVideoHLSTranscode(videoID int64, inputPath string, outputDir string) error {
+	logPath := filepath.Join(outputDir, "ffmpeg.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	args := []string{
+		"-hide_banner", "-nostdin", "-y",
+		"-i", inputPath,
+		"-map", "0:v:0", "-map", "0:a:0?",
+		"-vf", "scale=w=min(1920\\,iw):h=-2",
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+		"-c:a", "aac", "-ac", "2",
+		"-f", "hls",
+		"-hls_time", "6",
+		"-hls_list_size", "0",
+		"-hls_segment_filename", filepath.Join(outputDir, "segment_%05d.ts"),
+		filepath.Join(outputDir, "index.m3u8"),
+	}
+	cmd := exec.CommandContext(context.Background(), "ffmpeg", args...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return err
+	}
+	go func() {
+		_ = cmd.Wait()
+		_ = logFile.Close()
+		releaseVideoTranscode(videoID, outputDir)
+	}()
+	return nil
+}
+
+func claimVideoTranscode(videoID int64, dir string) bool {
+	videoTranscodeState.Lock()
+	defer videoTranscodeState.Unlock()
+	if videoTranscodeState.dir != "" && videoTranscodeState.dir != dir {
+		return false
+	}
+	videoTranscodeState.videoID = videoID
+	videoTranscodeState.dir = dir
+	return true
+}
+
+func releaseVideoTranscode(videoID int64, dir string) {
+	videoTranscodeState.Lock()
+	defer videoTranscodeState.Unlock()
+	if videoTranscodeState.videoID == videoID && videoTranscodeState.dir == dir {
+		videoTranscodeState.videoID = 0
+		videoTranscodeState.dir = ""
+	}
+}
+
+func currentVideoTranscode(videoID int64, dir string) bool {
+	videoTranscodeState.Lock()
+	defer videoTranscodeState.Unlock()
+	return videoTranscodeState.videoID == videoID && videoTranscodeState.dir == dir
+}
+
+func otherVideoTranscodeActive() bool {
+	videoTranscodeState.Lock()
+	defer videoTranscodeState.Unlock()
+	return videoTranscodeState.dir != ""
+}
+
+func activeVideoTranscode() (int64, string) {
+	videoTranscodeState.Lock()
+	defer videoTranscodeState.Unlock()
+	return videoTranscodeState.videoID, videoTranscodeState.dir
+}
+
+func countHLSSegments(dir string) int {
+	matches, err := filepath.Glob(filepath.Join(dir, "segment_*.ts"))
+	if err != nil {
+		return 0
+	}
+	return len(matches)
+}
+
+func transcodeLogLooksFailed(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	text := strings.ToLower(string(data))
+	return strings.Contains(text, "conversion failed") || strings.Contains(text, "error while") || strings.Contains(text, "invalid data")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func recentMarker(path string, ttl time.Duration) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return time.Since(info.ModTime()) < ttl
 }
 
 func (s *Service) FavoriteBooks(limit int) ([]domain.Book, error) {
@@ -498,6 +966,138 @@ func downloadGameCover(sourceURL string, cachePath string) error {
 	return os.Rename(tmpPath, cachePath)
 }
 
+func localVideoThumbnailCandidates(videoPath string) []string {
+	dir := filepath.Dir(videoPath)
+	ext := filepath.Ext(videoPath)
+	base := strings.TrimSuffix(filepath.Base(videoPath), ext)
+	names := []string{
+		base + ".jpg",
+		base + ".jpeg",
+		base + ".png",
+		base + ".webp",
+		base + ".poster.jpg",
+		base + ".poster.jpeg",
+		base + ".poster.png",
+		base + ".cover.jpg",
+		base + ".cover.jpeg",
+		base + ".cover.png",
+		"poster.jpg",
+		"poster.jpeg",
+		"poster.png",
+		"cover.jpg",
+		"cover.jpeg",
+		"cover.png",
+	}
+	candidates := make([]string, 0, len(names))
+	seen := map[string]bool{}
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		if !seen[path] {
+			seen[path] = true
+			candidates = append(candidates, path)
+		}
+	}
+	return candidates
+}
+
+func openImageFile(path string) (*os.File, string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	header := make([]byte, 512)
+	n, readErr := file.Read(header)
+	if readErr != nil && readErr != io.EOF {
+		_ = file.Close()
+		return nil, "", readErr
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, "", err
+	}
+	contentType := http.DetectContentType(header[:n])
+	if !strings.HasPrefix(contentType, "image/") {
+		_ = file.Close()
+		return nil, "", fmt.Errorf("%s is not an image", path)
+	}
+	return file, contentType, nil
+}
+
+func extractVideoThumbnail(inputPath string, outputPath string, durationSeconds float64) error {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return fmt.Errorf("ffmpeg is not installed")
+	}
+	seekSeconds := 60
+	if durationSeconds > 0 {
+		seekSeconds = int(durationSeconds * 0.1)
+		if seekSeconds < 10 {
+			seekSeconds = 10
+		}
+		if seekSeconds > 300 {
+			seekSeconds = 300
+		}
+	}
+	tmpPath := outputPath + ".tmp.jpg"
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	args := []string{
+		"-hide_banner", "-nostdin", "-y",
+		"-ss", strconv.Itoa(seekSeconds),
+		"-i", inputPath,
+		"-frames:v", "1",
+		"-vf", "scale=w=640:h=-2",
+		"-q:v", "4",
+		tmpPath,
+	}
+	output, err := exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("ffmpeg thumbnail failed: %s", strings.TrimSpace(string(output)))
+	}
+	return os.Rename(tmpPath, outputPath)
+}
+
+func claimVideoThumbnail(ctx context.Context) bool {
+	videoThumbnailState.Lock()
+	defer videoThumbnailState.Unlock()
+	if videoThumbnailState.cond == nil {
+		videoThumbnailState.cond = sync.NewCond(&videoThumbnailState.Mutex)
+	}
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			videoThumbnailState.Lock()
+			videoThumbnailState.cond.Broadcast()
+			videoThumbnailState.Unlock()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	if videoThumbnailState.active {
+		for videoThumbnailState.active && ctx.Err() == nil {
+			videoThumbnailState.cond.Wait()
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+	}
+	videoThumbnailState.active = true
+	return true
+}
+
+func releaseVideoThumbnail() {
+	videoThumbnailState.Lock()
+	defer videoThumbnailState.Unlock()
+	videoThumbnailState.active = false
+	if videoThumbnailState.cond != nil {
+		videoThumbnailState.cond.Broadcast()
+	}
+}
+
 func (s *Service) Book(id int64) (domain.Book, error) {
 	return s.store.BookByID(id)
 }
@@ -513,6 +1113,8 @@ func (s *Service) AnalyzeBook(id int64) ([]domain.Page, error) {
 	var pages []domain.Page
 	if book.Format == "epub" {
 		pages, err = archive.ListEPUBSpine(book.FilePath)
+	} else if book.Format == "pdf" {
+		pages = []domain.Page{{Index: 0, Name: filepath.Base(book.FilePath)}}
 	} else {
 		pages, err = archive.ListPages(book.FilePath)
 	}
@@ -543,6 +1145,16 @@ func (s *Service) OpenPage(bookID int64, pageIndex int) (PageStream, error) {
 	}
 	if book.FilePath == "" {
 		return PageStream{}, fmt.Errorf("book has no indexed file")
+	}
+	if book.Format == "pdf" {
+		if pageIndex != 0 {
+			return PageStream{}, fmt.Errorf("page index %d out of range", pageIndex)
+		}
+		body, err := os.Open(book.FilePath)
+		if err != nil {
+			return PageStream{}, err
+		}
+		return PageStream{Body: body, ContentType: "application/pdf"}, nil
 	}
 	if book.Format == "epub" {
 		pages, err := s.Pages(bookID)
@@ -580,7 +1192,22 @@ func (s *Service) OpenCover(bookID int64) (PageStream, error) {
 		}
 		return PageStream{Body: body, ContentType: contentType}, nil
 	}
+	if book.Format == "pdf" {
+		return PageStream{
+			Body:        io.NopCloser(strings.NewReader(pdfCoverPlaceholder())),
+			ContentType: "image/svg+xml; charset=utf-8",
+		}, nil
+	}
 	return s.OpenPage(bookID, 0)
+}
+
+func pdfCoverPlaceholder() string {
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="600" viewBox="0 0 420 600">
+		<rect width="420" height="600" fill="#f5f1e8"/>
+		<rect x="34" y="34" width="352" height="532" rx="18" fill="#fffaf0" stroke="#d2c7b4" stroke-width="4"/>
+		<text x="210" y="260" text-anchor="middle" font-family="Arial, sans-serif" font-size="42" font-weight="700" fill="#1f2a2e">PDF</text>
+		<text x="210" y="316" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" letter-spacing="3" fill="#6d6255">NOW PRINTING</text>
+	</svg>`
 }
 
 func (s *Service) EPUBManifest(bookID int64) (domain.EPUBManifest, error) {

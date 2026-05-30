@@ -2,7 +2,7 @@ export type Library = {
   id: number;
   name: string;
   rootPath: string;
-  assetType: "mixed" | "book" | "comic" | "game";
+  assetType: "mixed" | "book" | "comic" | "game" | "video";
 };
 
 export type DirectoryEntry = {
@@ -22,7 +22,7 @@ export type Series = {
   title: string;
   directoryPath: string;
   collectionType: "directory" | "game_platform";
-  primaryType: "book" | "comic" | "game";
+  primaryType: "book" | "comic" | "game" | "video";
   bookCount: number;
 };
 
@@ -76,6 +76,43 @@ export type GameAsset = {
   manifestUrl?: string;
 };
 
+export type VideoAsset = {
+  id: number;
+  assetType?: "video";
+  title: string;
+  format: string;
+  size: number;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  thumbnailStatus: string;
+  thumbnailUrl: string;
+  manifestUrl: string;
+  directPlayable: boolean;
+  playbackMode: "direct" | "hls";
+  playbackReason?: string;
+  fileUrl?: string;
+  hlsUrl?: string;
+  transcodeStatusUrl?: string;
+};
+
+export type VideoTranscodeStatus = {
+  videoId: number;
+  status: "idle" | "starting" | "running" | "queued" | "ready" | "failed";
+  message?: string;
+  segmentCount: number;
+};
+
+export type VideoTranscodeQueueStatus = {
+  status: "idle" | "running";
+  activeVideoId?: number;
+  activeTitle?: string;
+  segmentCount: number;
+  message?: string;
+};
+
 export type SearchResponse = {
   query: string;
   books: Book[];
@@ -105,9 +142,18 @@ export type GameListPage = {
   hasMore: boolean;
 };
 
+export type VideoListPage = {
+  items: VideoAsset[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+};
+
 export type CollectionAssets = {
   books: Book[];
   games: GameAsset[];
+  videos: VideoAsset[];
 };
 
 export type BookListOptions = {
@@ -119,6 +165,10 @@ export type BookListOptions = {
 
 export type GameListOptions = BookListOptions & {
   platform?: string;
+  format?: string;
+};
+
+export type VideoListOptions = BookListOptions & {
   format?: string;
 };
 
@@ -191,6 +241,27 @@ export type AuthStatus = {
   enabled: boolean;
 };
 
+export type SetupStatus = {
+  initialized: boolean;
+  authEnabled: boolean;
+  hasLibraries: boolean;
+  tokenConfigured: boolean;
+  directoryRoots: DirectoryEntry[];
+  scanWorkers: number;
+};
+
+export type SetupInput = {
+  token: string;
+  name: string;
+  rootPath: string;
+  assetType: Library["assetType"];
+  scanWorkers?: number;
+};
+
+export type ScanSettings = {
+  scanWorkers: number;
+};
+
 const authTokenKey = "foliospace_api_token";
 
 export function getAuthToken() {
@@ -245,6 +316,19 @@ export const api = {
       body: JSON.stringify({ token }),
     }),
   authLogout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
+  setupStatus: () => request<SetupStatus>("/api/setup/status"),
+  setupInitialize: (input: SetupInput) =>
+    request<Library>("/api/setup/initialize", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  directoryRoots: () => request<{ roots: DirectoryEntry[] }>("/api/config/directory-roots"),
+  scanSettings: () => request<ScanSettings>("/api/settings/scan"),
+  saveScanSettings: (settings: ScanSettings) =>
+    request<ScanSettings>("/api/settings/scan", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    }),
   clientPreferences: () => request<ClientPreferences>("/api/client/preferences"),
   saveClientPreferences: (preferences: ClientPreferences) =>
     request<ClientPreferences>("/api/client/preferences", {
@@ -274,6 +358,7 @@ export const api = {
   continueReading: () => request<Book[]>("/api/books/continue-reading?limit=12"),
   recentBooks: () => request<Book[]>("/api/books/recent?limit=12"),
   recentGames: () => request<GameAsset[]>("/api/games/recent?limit=12"),
+  recentVideos: () => request<VideoAsset[]>("/api/videos/recent?limit=12"),
   clientGames: (options: GameListOptions = {}) => {
     const params = new URLSearchParams();
     if (options.limit) params.set("limit", String(options.limit));
@@ -284,6 +369,17 @@ export const api = {
     if (options.sort) params.set("sort", options.sort);
     return request<GameListPage>(`/api/client/games?${params.toString()}`);
   },
+  clientVideos: (options: VideoListOptions = {}) => {
+    const params = new URLSearchParams();
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.offset) params.set("offset", String(options.offset));
+    if (options.q) params.set("q", options.q);
+    if (options.format) params.set("format", options.format);
+    if (options.sort) params.set("sort", options.sort);
+    return request<VideoListPage>(`/api/client/videos?${params.toString()}`);
+  },
+  videoTranscodeStatus: (videoId: number) => request<VideoTranscodeStatus>(`/api/client/videos/${videoId}/transcode/status`),
+  videoTranscodeQueueStatus: () => request<VideoTranscodeQueueStatus>("/api/client/videos/transcode/status"),
   favoriteBooks: () => request<Book[]>("/api/books/favorites?limit=12"),
   privateStatusBooks: (status: string) => request<Book[]>(`/api/books/private-status/${encodeURIComponent(status)}?limit=12`),
   search: (q: string, limit = 12) =>

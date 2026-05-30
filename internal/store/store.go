@@ -18,6 +18,22 @@ func New(db *sql.DB) *Store {
 	return &Store{db: db}
 }
 
+func (s *Store) Setting(key string) (string, error) {
+	row := s.db.QueryRow(`SELECT value FROM app_settings WHERE key = ?`, strings.TrimSpace(key))
+	var value string
+	if err := row.Scan(&value); err != nil {
+		return "", err
+	}
+	return value, nil
+}
+
+func (s *Store) UpsertSetting(key string, value string) error {
+	_, err := s.db.Exec(`INSERT INTO app_settings(key, value) VALUES(?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+		strings.TrimSpace(key), strings.TrimSpace(value))
+	return err
+}
+
 func (s *Store) CreateLibrary(name string, rootPath string) (domain.Library, error) {
 	return s.CreateLibraryWithType(name, rootPath, "mixed")
 }
@@ -107,6 +123,9 @@ func (s *Store) DeleteLibrary(id int64) error {
 	if _, err := tx.Exec(`DELETE FROM games WHERE library_id = ?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM videos WHERE library_id = ?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM files WHERE library_id = ?`, id); err != nil {
 		return err
 	}
@@ -138,7 +157,7 @@ func (s *Store) UpsertSeries(libraryID int64, title string, directoryPath string
 		return domain.Series{}, err
 	}
 	row := s.db.QueryRow(`SELECT s.id, s.library_id, s.title, s.directory_path, s.collection_type,
-			CASE WHEN l.asset_type IN ('book', 'comic', 'game') THEN l.asset_type ELSE 'comic' END,
+			CASE WHEN l.asset_type IN ('book', 'comic', 'game', 'video') THEN l.asset_type ELSE 'comic' END,
 			0
 		FROM series s
 		JOIN libraries l ON l.id = s.library_id
@@ -151,7 +170,7 @@ func (s *Store) SeriesByID(id int64) (domain.Series, error) {
 			COALESCE(NULLIF(s.directory_path, ''), ''),
 			s.collection_type,
 			CASE
-				WHEN l.asset_type IN ('book', 'comic', 'game') THEN l.asset_type
+				WHEN l.asset_type IN ('book', 'comic', 'game', 'video') THEN l.asset_type
 				WHEN SUM(CASE WHEN b.format IN ('epub', 'pdf') THEN 1 ELSE 0 END) > SUM(CASE WHEN b.format IN ('cbz', 'zip', 'cbr', 'rar', '7z') THEN 1 ELSE 0 END) THEN 'book'
 				ELSE 'comic'
 			END,
@@ -173,7 +192,7 @@ func (s *Store) ListSeries() ([]domain.Series, error) {
 			END), ''),
 			s.collection_type,
 			CASE
-				WHEN l.asset_type IN ('book', 'comic', 'game') THEN l.asset_type
+				WHEN l.asset_type IN ('book', 'comic', 'game', 'video') THEN l.asset_type
 				WHEN SUM(CASE WHEN b.format IN ('epub', 'pdf') THEN 1 ELSE 0 END) > SUM(CASE WHEN b.format IN ('cbz', 'zip', 'cbr', 'rar', '7z') THEN 1 ELSE 0 END) THEN 'book'
 				ELSE 'comic'
 			END,
@@ -246,6 +265,151 @@ func (s *Store) DeleteEmptySeries(libraryID int64) error {
 		WHERE library_id = ?
 		AND id NOT IN (SELECT DISTINCT series_id FROM books)`, libraryID)
 	return err
+}
+
+func (s *Store) DeleteSkippedDirectoryEntries(libraryID int64, names []string) (int64, error) {
+	if len(names) == 0 {
+		return 0, nil
+	}
+	conditions, args := skippedDirectoryConditions("rel_path", names)
+	args = append([]any{libraryID}, args...)
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT DISTINCT book_id FROM files WHERE library_id = ? AND (`+conditions+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	var bookIDs []int64
+	for rows.Next() {
+		var bookID int64
+		if err := rows.Scan(&bookID); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		bookIDs = append(bookIDs, bookID)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	fileRes, err := tx.Exec(`DELETE FROM files WHERE library_id = ? AND (`+conditions+`)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	deletedFiles, err := fileRes.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	gameConditions, gameArgs := skippedDirectoryConditions("rel_path", names)
+	gameArgs = append([]any{libraryID}, gameArgs...)
+	gameRes, err := tx.Exec(`DELETE FROM games WHERE library_id = ? AND (`+gameConditions+`)`, gameArgs...)
+	if err != nil {
+		return 0, err
+	}
+	deletedGames, err := gameRes.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	videoConditions, videoArgs := skippedDirectoryConditions("rel_path", names)
+	videoArgs = append([]any{libraryID}, videoArgs...)
+	videoRes, err := tx.Exec(`DELETE FROM videos WHERE library_id = ? AND (`+videoConditions+`)`, videoArgs...)
+	if err != nil {
+		return 0, err
+	}
+	deletedVideos, err := videoRes.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+
+	errorConditions, errorArgs := skippedDirectoryConditions("path", names)
+	errorArgs = append([]any{libraryID}, errorArgs...)
+	if _, err := tx.Exec(`DELETE FROM file_errors WHERE library_id = ? AND (`+errorConditions+`)`, errorArgs...); err != nil {
+		return 0, err
+	}
+
+	orphanBookIDs, err := orphanedBookIDs(tx, bookIDs)
+	if err != nil {
+		return 0, err
+	}
+	if len(orphanBookIDs) > 0 {
+		placeholders, deleteArgs := int64Placeholders(orphanBookIDs)
+		if _, err := tx.Exec(`DELETE FROM read_progress WHERE book_id IN (`+placeholders+`)`, deleteArgs...); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`DELETE FROM pages WHERE book_id IN (`+placeholders+`)`, deleteArgs...); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`DELETE FROM books WHERE id IN (`+placeholders+`)`, deleteArgs...); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM series
+		WHERE library_id = ?
+		AND id NOT IN (SELECT DISTINCT series_id FROM books)`, libraryID); err != nil {
+		return 0, err
+	}
+	return deletedFiles + deletedGames + deletedVideos, tx.Commit()
+}
+
+func skippedDirectoryConditions(column string, names []string) (string, []any) {
+	conditions := make([]string, 0, len(names)*2)
+	args := make([]any, 0, len(names)*3)
+	for _, name := range names {
+		name = strings.Trim(strings.TrimSpace(name), `/\`)
+		if name == "" {
+			continue
+		}
+		conditions = append(conditions, column+" = ?", column+" LIKE ?", column+" LIKE ?")
+		args = append(args, name, name+"/%", "%/"+name+"/%")
+	}
+	if len(conditions) == 0 {
+		return "1 = 0", nil
+	}
+	return strings.Join(conditions, " OR "), args
+}
+
+func orphanedBookIDs(tx *sql.Tx, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders, args := int64Placeholders(ids)
+	rows, err := tx.Query(`SELECT b.id FROM books b
+		WHERE b.id IN (`+placeholders+`)
+		AND NOT EXISTS (SELECT 1 FROM files f WHERE f.book_id = b.id)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]int64, 0, len(ids))
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func int64Placeholders(ids []int64) (string, []any) {
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	return strings.Join(placeholders, ","), args
 }
 
 func (s *Store) UpsertBook(seriesID int64, title string, format string) (domain.Book, error) {
@@ -689,6 +853,106 @@ func (s *Store) ListGamesByPlatform(platform string) ([]domain.GameAsset, error)
 	return scanGames(rows)
 }
 
+func (s *Store) UpsertVideo(video domain.VideoAsset) (domain.VideoAsset, error) {
+	video.Format = strings.TrimSpace(video.Format)
+	video.VideoCodec = strings.TrimSpace(video.VideoCodec)
+	video.AudioCodec = strings.TrimSpace(video.AudioCodec)
+	if strings.TrimSpace(video.ThumbnailStatus) == "" {
+		video.ThumbnailStatus = "placeholder"
+	}
+	_, err := s.db.Exec(`INSERT INTO videos(library_id, title, format, file_path, rel_path, size, mtime, duration_seconds, width, height, video_codec, audio_codec, thumbnail_status)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(file_path) DO UPDATE SET library_id = excluded.library_id,
+			title = excluded.title,
+			format = excluded.format,
+			rel_path = excluded.rel_path,
+			size = excluded.size,
+			mtime = excluded.mtime,
+			duration_seconds = excluded.duration_seconds,
+			width = excluded.width,
+			height = excluded.height,
+			video_codec = excluded.video_codec,
+			audio_codec = excluded.audio_codec,
+			thumbnail_status = excluded.thumbnail_status,
+			updated_at = CURRENT_TIMESTAMP`,
+		video.LibraryID, video.Title, video.Format, video.FilePath, video.RelPath, video.Size, video.MTime.Format(time.RFC3339Nano), video.DurationSeconds, video.Width, video.Height, video.VideoCodec, video.AudioCodec, video.ThumbnailStatus)
+	if err != nil {
+		return domain.VideoAsset{}, err
+	}
+	return s.VideoByPath(video.FilePath)
+}
+
+func (s *Store) VideoByID(id int64) (domain.VideoAsset, error) {
+	row := s.db.QueryRow(videoSelectSQL()+` WHERE id = ?`, id)
+	return scanVideo(row)
+}
+
+func (s *Store) VideoByPath(filePath string) (domain.VideoAsset, error) {
+	row := s.db.QueryRow(videoSelectSQL()+` WHERE file_path = ?`, filePath)
+	return scanVideo(row)
+}
+
+func (s *Store) DeleteVideoByPath(filePath string) error {
+	_, err := s.db.Exec(`DELETE FROM videos WHERE file_path = ?`, filePath)
+	return err
+}
+
+func (s *Store) CanSkipVideo(path string, size int64, mtime time.Time) bool {
+	video, err := s.VideoByPath(path)
+	if err != nil {
+		return false
+	}
+	return video.Size == size && video.MTime.Equal(mtime)
+}
+
+func (s *Store) ListRecentVideos(limit int) ([]domain.VideoAsset, error) {
+	limit = normalizeShelfLimit(limit)
+	rows, err := s.db.Query(videoSelectSQL()+` ORDER BY updated_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanVideos(rows)
+}
+
+func (s *Store) ListVideosPage(options domain.VideoListOptions) (domain.VideoListPage, error) {
+	limit := options.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	offset := options.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	where, args := videoListWhere(options)
+	var total int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM videos`+where, args...).Scan(&total); err != nil {
+		return domain.VideoListPage{}, err
+	}
+	queryArgs := append([]any{}, args...)
+	queryArgs = append(queryArgs, limit, offset)
+	rows, err := s.db.Query(videoSelectSQL()+where+videoListOrderBy(options.Sort)+` LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return domain.VideoListPage{}, err
+	}
+	defer rows.Close()
+	items, err := scanVideos(rows)
+	if err != nil {
+		return domain.VideoListPage{}, err
+	}
+	return domain.VideoListPage{
+		Items:   items,
+		Total:   total,
+		Limit:   limit,
+		Offset:  offset,
+		HasMore: int64(offset+len(items)) < total,
+	}, nil
+}
+
 func gameListWhere(options domain.GameListOptions) (string, []any) {
 	clauses := make([]string, 0, 3)
 	args := make([]any, 0, 8)
@@ -709,6 +973,33 @@ func gameListWhere(options domain.GameListOptions) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+func videoListWhere(options domain.VideoListOptions) (string, []any) {
+	clauses := make([]string, 0, 2)
+	args := make([]any, 0, 5)
+	if query := strings.TrimSpace(options.Query); query != "" {
+		like := "%" + strings.ToLower(query) + "%"
+		clauses = append(clauses, `(LOWER(title) LIKE ? OR LOWER(rel_path) LIKE ? OR LOWER(format) LIKE ?)`)
+		args = append(args, like, like, like)
+	}
+	if format := strings.TrimSpace(options.Format); format != "" {
+		clauses = append(clauses, `LOWER(format) = LOWER(?)`)
+		args = append(args, format)
+	}
+	if len(clauses) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+func videoListOrderBy(sort string) string {
+	switch strings.ToLower(strings.TrimSpace(sort)) {
+	case "title":
+		return ` ORDER BY LOWER(title), id`
+	default:
+		return ` ORDER BY updated_at DESC, id DESC`
+	}
 }
 
 func gameListOrderBy(sort string) string {
@@ -974,6 +1265,51 @@ func (s *Store) RequestScanJobCancel(id int64) (domain.ScanJob, error) {
 	return s.ScanJobByID(id)
 }
 
+func (s *Store) CancelInterruptedScanJobs() (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id FROM scan_jobs WHERE status IN ('running', 'pause_requested', 'cancel_requested')`)
+	if err != nil {
+		return 0, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, tx.Commit()
+	}
+
+	finishedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, id := range ids {
+		if _, err := tx.Exec(`UPDATE scan_jobs SET status = 'cancelled', finished_at = ? WHERE id = ?`, finishedAt, id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(`INSERT INTO job_events(job_id, level, message) VALUES(?, 'warn', 'marked cancelled after service restart')`, id); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int64(len(ids)), nil
+}
+
 func (s *Store) ScanJobByID(id int64) (domain.ScanJob, error) {
 	row := s.db.QueryRow(`SELECT id, library_id, status, current_path, discovered_files, indexed_files, skipped_files, error_count, metadata_updated_files, reclassified_files, started_at, finished_at FROM scan_jobs WHERE id = ?`, id)
 	return scanJob(row)
@@ -1105,7 +1441,7 @@ func scanLibrary(row scanner) (domain.Library, error) {
 
 func normalizeLibraryAssetType(value string) string {
 	switch strings.TrimSpace(value) {
-	case "book", "comic", "game":
+	case "book", "comic", "game", "video":
 		return strings.TrimSpace(value)
 	default:
 		return "mixed"
@@ -1131,7 +1467,7 @@ func scanSeries(row scanner) (domain.Series, error) {
 
 func normalizeCollectionPrimaryType(value string) string {
 	switch strings.TrimSpace(value) {
-	case "book", "comic", "game":
+	case "book", "comic", "game", "video":
 		return strings.TrimSpace(value)
 	default:
 		return "comic"
@@ -1280,6 +1616,101 @@ func scanGame(row scanner) (domain.GameAsset, error) {
 	game.CreatedAt = parseTime(createdAt)
 	game.UpdatedAt = parseTime(updatedAt)
 	return game, nil
+}
+
+func videoSelectSQL() string {
+	return `SELECT id, library_id, title, format, file_path, rel_path, size, mtime, duration_seconds, width, height, video_codec, audio_codec, thumbnail_status, last_played_at, created_at, updated_at FROM videos`
+}
+
+func scanVideos(rows *sql.Rows) ([]domain.VideoAsset, error) {
+	out := make([]domain.VideoAsset, 0)
+	for rows.Next() {
+		video, err := scanVideo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, video)
+	}
+	return out, rows.Err()
+}
+
+func scanVideo(row scanner) (domain.VideoAsset, error) {
+	var video domain.VideoAsset
+	var mtime string
+	var lastPlayedAt string
+	var createdAt string
+	var updatedAt string
+	if err := row.Scan(
+		&video.ID,
+		&video.LibraryID,
+		&video.Title,
+		&video.Format,
+		&video.FilePath,
+		&video.RelPath,
+		&video.Size,
+		&mtime,
+		&video.DurationSeconds,
+		&video.Width,
+		&video.Height,
+		&video.VideoCodec,
+		&video.AudioCodec,
+		&video.ThumbnailStatus,
+		&lastPlayedAt,
+		&createdAt,
+		&updatedAt,
+	); err != nil {
+		return video, err
+	}
+	video.MTime = parseTime(mtime)
+	video.LastPlayedAt = parseTime(lastPlayedAt)
+	video.CreatedAt = parseTime(createdAt)
+	video.UpdatedAt = parseTime(updatedAt)
+	video.DirectPlayable, video.PlaybackMode, video.PlaybackReason = videoPlaybackCompatibility(video)
+	return video, nil
+}
+
+func videoPlaybackCompatibility(video domain.VideoAsset) (bool, string, string) {
+	format := strings.ToLower(strings.TrimSpace(video.Format))
+	videoCodec := strings.ToLower(strings.TrimSpace(video.VideoCodec))
+	audioCodec := strings.ToLower(strings.TrimSpace(video.AudioCodec))
+	switch format {
+	case "mp4", "m4v":
+		if videoCodec == "" && looksLikeHEVCVideo(video) {
+			return false, "hls", "filename indicates HEVC/H.265 video"
+		}
+		if videoCodec == "" {
+			return true, "direct", ""
+		}
+		if isH264Codec(videoCodec) && (audioCodec == "" || audioCodec == "aac" || audioCodec == "mp3") {
+			return true, "direct", ""
+		}
+		return false, "hls", "mp4 codecs may need browser transcode"
+	case "webm":
+		if videoCodec == "" {
+			return true, "direct", ""
+		}
+		if (videoCodec == "vp8" || videoCodec == "vp9" || videoCodec == "av1") && (audioCodec == "" || audioCodec == "opus" || audioCodec == "vorbis") {
+			return true, "direct", ""
+		}
+		return false, "hls", "webm codecs may need browser transcode"
+	default:
+		return false, "hls", "container or codecs need browser transcode"
+	}
+}
+
+func isH264Codec(codec string) bool {
+	return codec == "h264" || codec == "avc1" || codec == "avc"
+}
+
+func looksLikeHEVCVideo(video domain.VideoAsset) bool {
+	haystack := strings.ToLower(strings.Join([]string{video.Title, video.RelPath, video.FilePath}, " "))
+	hevcMarkers := []string{"h265", "h.265", "hevc", "x265", "10bit", "10-bit", "hdr", "dolby vision", "dv"}
+	for _, marker := range hevcMarkers {
+		if strings.Contains(haystack, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func scanJob(row scanner) (domain.ScanJob, error) {

@@ -6,10 +6,13 @@ It is not trying to become a complete Plex, Jellyfin, or Immich replacement. The
 
 The current implementation still starts from the FolioSpace Reader codebase and keeps the existing reading MVP operational while the model evolves toward `Asset` / `LibraryItem`.
 
+Current release branch: `0.82`.
+
 ## Runtime Layout
 
 - `/config`: SQLite database, generated covers/thumbnails, runtime cache.
 - `/library`: read-only mounted asset library root.
+- `/books`, `/games`: optional read-only roots used by the default Docker compose example.
 - `8080`: web UI and HTTP API.
 
 Recommended NAS config root:
@@ -34,11 +37,13 @@ go run ./cmd/foliospace-reader
 ```bash
 FOLIOSPACE_CONFIG_DIR=/config
 FOLIOSPACE_LIBRARY_DIR=/library
+FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games
 FOLIOSPACE_ADDR=:8080
 FOLIOSPACE_API_TOKEN=
+FOLIOSPACE_SCAN_WORKERS=2
 ```
 
-Set `FOLIOSPACE_API_TOKEN` to require API authentication. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
+Set `FOLIOSPACE_API_TOKEN` to require API authentication from environment variables. If it is empty, release `0.82` can create the first access token from the web setup page and stores only a SHA-256 token hash in SQLite. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
 
 Authentication helpers:
 
@@ -46,23 +51,42 @@ Authentication helpers:
 - `POST /api/auth/check`: accepts `{"token":"..."}` and returns `{"ok":true}` for a valid token.
 - `POST /api/auth/logout`: clears the web auth cookie.
 
+First-run setup helpers:
+
+- `GET /api/setup/status`: returns whether the service has an access token and at least one library.
+- `POST /api/setup/initialize`: creates the first access token and first library.
+- `GET /api/config/directory-roots`: returns container-visible root directories for the setup picker.
+
 ## Client API v1
 
 Detailed client integration docs are in [`docs/api/client-v1.md`](docs/api/client-v1.md).
 
 - `GET /api/client/info`: service metadata, supported formats, and capability flags.
 - `GET /api/client/home`: `continueReading`, `recentBooks`, and `collections` in one response.
-- `GET /api/client/books/:id/manifest`: a client-safe open manifest. CBZ/ZIP books include page URLs; EPUB books include spine, TOC, `resourceBaseUrl`, `coverUrl`, and progress.
+- `GET /api/client/books/:id/manifest`: a client-safe open manifest. CBZ/ZIP books include page URLs; EPUB books include spine, TOC, `resourceBaseUrl`, `coverUrl`, and progress; PDF books expose an opaque Range-capable stream URL for single-page or double-page client layouts.
 - `GET /api/client/games/:id/manifest`: a client-safe game launch manifest with platform, checksums, emulator hint, and an opaque file URL.
 - `GET/PUT /api/client/books/:id/private-state`: client-safe private status, favorite, rating, tags, and note sync.
 - `GET/PUT /api/client/preferences`: client UI language and reader preference sync.
+- `GET/PUT /api/settings/scan`: scan worker settings for NAS devices with different CPU and memory budgets.
 - `GET /api/client/search`, `/api/client/books/favorites`, and `/api/client/books/private-status/:status`: private-state-aware discovery shelves.
 
 Client API book and collection responses omit local NAS file paths.
 
 ## MCP
 
-Agent integration docs are in [`docs/mcp/usage.md`](docs/mcp/usage.md). The MCP server wraps the stable Client API for diagnostics, library lookup, manifests, favorites/private-status shelves, preferences, private reader state, progress, scan jobs, job control, and collection access. Heavy media streams still use the HTTP URLs returned by the API.
+Agent integration docs are in [`docs/mcp/usage.md`](docs/mcp/usage.md). The MCP server wraps the stable Client API for diagnostics, library lookup, manifests, favorites/private-status shelves, preferences, private reader state, progress, scan jobs, scan worker settings, job control, and collection access. Heavy media streams still use the HTTP URLs returned by the API.
+
+End users can install the MCP binary on the machine where their agent client runs:
+
+```bash
+curl -fsSL https://foliospace.app/install-mcp.sh | sh
+```
+
+Release maintainers can build macOS/Linux MCP packages with:
+
+```bash
+VERSION=0.82 ./scripts/build-mcp-release.sh
+```
 
 ## Product Direction
 
@@ -81,23 +105,32 @@ ROM support is for indexing and launching user-owned local content. FolioSpace L
 
 ## Docker
 
+Release `0.82` image tag:
+
+```bash
+docker pull funland/foliospace-library:0.82
+```
+
 For local verification:
 
 ```bash
-mkdir -p data/config data/library
+mkdir -p data/config data/library data/books data/games
 docker compose up --build
 ```
 
-For a NAS deployment, mount your real library as read-only:
+For a NAS deployment, mount your real libraries as read-only:
 
 ```bash
 docker run -p 8080:8080 \
   -v /volume1/docker/foliospace-library/config:/config \
   -v /volume2/ComicCenter:/library:ro \
-  foliospace-library:dev
+  -v /volume2/Books:/books:ro \
+  -v /volume2/GameROMS:/games:ro \
+  -e FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games \
+  funland/foliospace-library:0.82
 ```
 
-Open `http://localhost:8080`, scan the configured library, then browse collections and books.
+Open `http://localhost:8080`. On a fresh `/config`, the setup page asks for an access key and lets you choose a container path such as `/library`, `/books`, or `/games`. If a directory is missing from the setup page, add a Docker volume mapping first; FolioSpace Library can only browse paths visible inside the container.
 
 ## Current MVP Support
 

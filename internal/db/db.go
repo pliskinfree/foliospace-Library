@@ -40,6 +40,11 @@ func Migrate(conn *sql.DB) error {
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS app_settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
 		`CREATE TABLE IF NOT EXISTS series (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
@@ -99,6 +104,25 @@ func Migrate(conn *sql.DB) error {
 			sha1 TEXT NOT NULL DEFAULT '',
 			emulator_hint TEXT NOT NULL DEFAULT '',
 			compatibility TEXT NOT NULL DEFAULT 'unknown',
+			last_played_at TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS videos (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			library_id INTEGER NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			format TEXT NOT NULL,
+			file_path TEXT NOT NULL UNIQUE,
+			rel_path TEXT NOT NULL,
+			size INTEGER NOT NULL,
+			mtime TEXT NOT NULL,
+			duration_seconds REAL NOT NULL DEFAULT 0,
+			width INTEGER NOT NULL DEFAULT 0,
+			height INTEGER NOT NULL DEFAULT 0,
+			video_codec TEXT NOT NULL DEFAULT '',
+			audio_codec TEXT NOT NULL DEFAULT '',
+			thumbnail_status TEXT NOT NULL DEFAULT 'placeholder',
 			last_played_at TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

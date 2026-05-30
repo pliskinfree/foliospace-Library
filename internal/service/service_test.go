@@ -1,9 +1,11 @@
 package service
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"foliospace-reader/internal/db"
 	"foliospace-reader/internal/domain"
@@ -61,6 +63,55 @@ func TestListDirectoriesRestrictsToConfiguredRoots(t *testing.T) {
 
 	if _, err := svc.ListDirectories(blocked); err == nil {
 		t.Fatal("blocked directory listing succeeded, want error")
+	}
+}
+
+func TestOpenVideoThumbnailUsesLocalSidecarImage(t *testing.T) {
+	root := t.TempDir()
+	videoPath := filepath.Join(root, "Demo Movie.mp4")
+	coverPath := filepath.Join(root, "Demo Movie.jpg")
+	if err := os.WriteFile(videoPath, []byte("video"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(coverPath, []byte{0xff, 0xd8, 0xff, 0xdb, 0x00, 0x43, 0x00}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	lib, err := st.CreateLibraryWithType("Movies", root, "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	video, err := st.UpsertVideo(domain.VideoAsset{
+		LibraryID:       lib.ID,
+		Title:           "Demo Movie",
+		Format:          "mp4",
+		FilePath:        videoPath,
+		RelPath:         "Demo Movie.mp4",
+		Size:            5,
+		MTime:           time.Unix(1, 0),
+		ThumbnailStatus: "placeholder",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := NewWithConfig(st, t.TempDir()).OpenVideoThumbnail(video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Body.Close()
+	data, err := io.ReadAll(stream.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.ContentType != "image/jpeg" || len(data) == 0 {
+		t.Fatalf("stream contentType=%q len=%d, want local jpeg", stream.ContentType, len(data))
 	}
 }
 

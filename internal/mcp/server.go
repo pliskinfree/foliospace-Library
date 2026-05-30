@@ -51,6 +51,8 @@ type Resource struct {
 	MimeType    string `json:"mimeType,omitempty"`
 }
 
+const serviceVersion = "0.82"
+
 func New(baseURL string, token string) *Server {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
@@ -79,7 +81,7 @@ func (s *Server) Handle(ctx context.Context, req Request) Response {
 			},
 			"serverInfo": map[string]any{
 				"name":    "foliospace-library",
-				"version": "0.1.0",
+				"version": serviceVersion,
 			},
 		})
 	case "tools/list":
@@ -114,8 +116,14 @@ func tools() []Tool {
 		{Name: "foliospace.open_book_manifest", Description: "Open a book/comic manifest with client-safe page, EPUB, progress, and state URLs.", InputSchema: objectSchema(map[string]any{"bookId": integerSchema("Book id.")}, []string{"bookId"})},
 		{Name: "foliospace.list_games", Description: "List paginated client-safe game ROM assets.", InputSchema: objectSchema(map[string]any{"limit": integerSchema("Maximum number of items."), "offset": integerSchema("Zero-based item offset."), "q": stringSchema("Optional search query."), "platform": stringSchema("Optional exact platform filter."), "format": stringSchema("Optional exact format filter."), "sort": stringSchema("recent, title, or platform.")}, nil)},
 		{Name: "foliospace.open_game_manifest", Description: "Open a game ROM manifest with metadata, cover URL, and opaque file URL.", InputSchema: objectSchema(map[string]any{"gameId": integerSchema("Game asset id.")}, []string{"gameId"})},
+		{Name: "foliospace.list_videos", Description: "List paginated client-safe video assets.", InputSchema: objectSchema(map[string]any{"limit": integerSchema("Maximum number of items."), "offset": integerSchema("Zero-based item offset."), "q": stringSchema("Optional search query."), "format": stringSchema("Optional exact format filter."), "sort": stringSchema("recent or title.")}, nil)},
+		{Name: "foliospace.open_video_manifest", Description: "Open a video manifest with metadata, thumbnail URL, and opaque range-stream file URL.", InputSchema: objectSchema(map[string]any{"videoId": integerSchema("Video asset id.")}, []string{"videoId"})},
+		{Name: "foliospace.get_video_transcode_status", Description: "Read HLS transcode state for a video asset, including queued, running, ready, or failed.", InputSchema: objectSchema(map[string]any{"videoId": integerSchema("Video asset id.")}, []string{"videoId"})},
+		{Name: "foliospace.get_video_transcode_queue", Description: "Read the active global video transcode task, if any.", InputSchema: objectSchema(nil, nil)},
 		{Name: "foliospace.get_preferences", Description: "Read client preferences such as interface language, reader settings, and feature defaults.", InputSchema: objectSchema(nil, nil)},
 		{Name: "foliospace.save_preferences", Description: "Save client preferences. Pass the same JSON shape as the HTTP Client API.", InputSchema: objectSchema(map[string]any{"interfaceLanguage": stringSchema("Interface language code, for example zh-Hans, zh-Hant, en, or ja.")}, nil)},
+		{Name: "foliospace.get_scan_settings", Description: "Read scan runtime settings such as worker count.", InputSchema: objectSchema(nil, nil)},
+		{Name: "foliospace.save_scan_settings", Description: "Save scan runtime settings. scanWorkers is normalized by the server.", InputSchema: objectSchema(map[string]any{"scanWorkers": integerSchema("Concurrent scan worker count, normalized by the server.")}, []string{"scanWorkers"})},
 		{Name: "foliospace.get_private_state", Description: "Read per-book private reader state such as bookmarks, notes, selected text, or local-only UI state.", InputSchema: objectSchema(map[string]any{"bookId": integerSchema("Book id.")}, []string{"bookId"})},
 		{Name: "foliospace.save_private_state", Description: "Save per-book private reader state. bookId selects the book; remaining fields are forwarded to the API.", InputSchema: objectSchema(map[string]any{"bookId": integerSchema("Book id.")}, []string{"bookId"})},
 		{Name: "foliospace.list_favorites", Description: "List favorite books as client-safe DTOs.", InputSchema: objectSchema(map[string]any{"limit": integerSchema("Maximum number of results.")}, nil)},
@@ -142,6 +150,7 @@ func resources() []Resource {
 		{URI: "foliospace://client/info", Name: "Client Info", Description: "Current FolioSpace Library service metadata.", MimeType: "application/json"},
 		{URI: "foliospace://client/home", Name: "Home", Description: "Continue reading, recent books, and collections.", MimeType: "application/json"},
 		{URI: "foliospace://client/preferences", Name: "Preferences", Description: "Client preference state.", MimeType: "application/json"},
+		{URI: "foliospace://settings/scan", Name: "Scan Settings", Description: "Scan worker and runtime settings.", MimeType: "application/json"},
 		{URI: "foliospace://libraries", Name: "Libraries", Description: "Configured libraries for diagnostics and scan selection.", MimeType: "application/json"},
 		{URI: "foliospace://jobs", Name: "Jobs", Description: "Scan/import job list.", MimeType: "application/json"},
 		{URI: "foliospace://errors", Name: "Errors", Description: "Scan/import error list.", MimeType: "application/json"},
@@ -165,6 +174,8 @@ func (s *Server) readResource(ctx context.Context, raw json.RawMessage) (any, er
 		data, err = s.get(ctx, "/api/client/home")
 	case "foliospace://client/preferences":
 		data, err = s.get(ctx, "/api/client/preferences")
+	case "foliospace://settings/scan":
+		data, err = s.get(ctx, "/api/settings/scan")
 	case "foliospace://libraries":
 		data, err = s.get(ctx, "/api/libraries")
 	case "foliospace://jobs":
@@ -221,10 +232,22 @@ func (s *Server) callTool(ctx context.Context, raw json.RawMessage) (any, error)
 		data, err = s.get(ctx, "/api/client/games?"+gameListQuery(params.Arguments))
 	case "foliospace.open_game_manifest":
 		data, err = s.get(ctx, fmt.Sprintf("/api/client/games/%d/manifest", intArg(params.Arguments, "gameId")))
+	case "foliospace.list_videos":
+		data, err = s.get(ctx, "/api/client/videos?"+videoListQuery(params.Arguments))
+	case "foliospace.open_video_manifest":
+		data, err = s.get(ctx, fmt.Sprintf("/api/client/videos/%d/manifest", intArg(params.Arguments, "videoId")))
+	case "foliospace.get_video_transcode_status":
+		data, err = s.get(ctx, fmt.Sprintf("/api/client/videos/%d/transcode/status", intArg(params.Arguments, "videoId")))
+	case "foliospace.get_video_transcode_queue":
+		data, err = s.get(ctx, "/api/client/videos/transcode/status")
 	case "foliospace.get_preferences":
 		data, err = s.get(ctx, "/api/client/preferences")
 	case "foliospace.save_preferences":
 		data, err = s.put(ctx, "/api/client/preferences", params.Arguments)
+	case "foliospace.get_scan_settings":
+		data, err = s.get(ctx, "/api/settings/scan")
+	case "foliospace.save_scan_settings":
+		data, err = s.put(ctx, "/api/settings/scan", params.Arguments)
 	case "foliospace.get_private_state":
 		data, err = s.get(ctx, fmt.Sprintf("/api/client/books/%d/private-state", intArg(params.Arguments, "bookId")))
 	case "foliospace.save_private_state":
@@ -396,6 +419,24 @@ func gameListQuery(args map[string]any) string {
 		values.Set("offset", strconv.FormatInt(offset, 10))
 	}
 	for _, key := range []string{"q", "platform", "format", "sort"} {
+		if value := stringArg(args, key); value != "" {
+			values.Set(key, value)
+		}
+	}
+	return values.Encode()
+}
+
+func videoListQuery(args map[string]any) string {
+	values := url.Values{}
+	limit := intArg(args, "limit")
+	if limit > 0 {
+		values.Set("limit", strconv.FormatInt(limit, 10))
+	}
+	offset := intArg(args, "offset")
+	if offset > 0 {
+		values.Set("offset", strconv.FormatInt(offset, 10))
+	}
+	for _, key := range []string{"q", "format", "sort"} {
 		if value := stringArg(args, key); value != "" {
 			values.Set(key, value)
 		}

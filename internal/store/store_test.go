@@ -166,6 +166,71 @@ func TestStoreRequestsScanJobControl(t *testing.T) {
 	}
 }
 
+func TestStoreCancelsInterruptedScanJobs(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	s := New(conn)
+	lib, err := s.CreateLibrary("Comics", "/library")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := s.StartScanJob(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRequested, err := s.StartScanJob(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RequestScanJobCancel(cancelRequested.ID); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.StartScanJob(lib.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed.Status = "completed"
+	completed.FinishedAt = time.Now()
+	if err := s.UpdateScanJob(completed); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := s.CancelInterruptedScanJobs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+	for _, id := range []int64{running.ID, cancelRequested.ID} {
+		job, err := s.ScanJobByID(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Status != "cancelled" || job.FinishedAt.IsZero() {
+			t.Fatalf("job %d = %#v, want cancelled with finished_at", id, job)
+		}
+		events, err := s.ListJobEvents(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events) != 1 || events[0].Level != "warn" {
+			t.Fatalf("events for job %d = %#v, want cleanup warning", id, events)
+		}
+	}
+	gotCompleted, err := s.ScanJobByID(completed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotCompleted.Status != "completed" {
+		t.Fatalf("completed job status = %q, want completed", gotCompleted.Status)
+	}
+}
+
 func TestStorePersistsAndListsGameAssets(t *testing.T) {
 	conn, err := db.Open(t.TempDir())
 	if err != nil {
@@ -252,6 +317,83 @@ func TestStoreListsGamesPageWithFiltersAndSort(t *testing.T) {
 	}
 	if len(filtered.Items) != 1 || filtered.Items[0].Title != "Super Contra" || filtered.HasMore {
 		t.Fatalf("filtered page = %#v, want Super Contra only", filtered)
+	}
+}
+
+func TestStorePersistsAndListsVideoAssets(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	s := New(conn)
+	lib, err := s.CreateLibraryWithType("Movies", "/library", "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	video, err := s.UpsertVideo(domain.VideoAsset{
+		LibraryID:       lib.ID,
+		Title:           "Demo Movie",
+		Format:          "mp4",
+		FilePath:        "/library/Movies/Demo Movie.mp4",
+		RelPath:         "Movies/Demo Movie.mp4",
+		Size:            4096,
+		MTime:           time.Unix(40, 0),
+		DurationSeconds: 120.5,
+		Width:           1920,
+		Height:          1080,
+		VideoCodec:      "h264",
+		AudioCodec:      "aac",
+		ThumbnailStatus: "placeholder",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.VideoByID(video.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Title != "Demo Movie" || got.Format != "mp4" || got.Width != 1920 || got.FilePath == "" {
+		t.Fatalf("video = %#v, want persisted video metadata", got)
+	}
+
+	recent, err := s.ListRecentVideos(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 1 || recent[0].ID != video.ID {
+		t.Fatalf("recent videos = %#v, want indexed video", recent)
+	}
+
+	page, err := s.ListVideosPage(domain.VideoListOptions{Limit: 1, Query: "demo", Format: "mp4", Sort: "title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Total != 1 || page.HasMore {
+		t.Fatalf("video page = %#v, want one matching video", page)
+	}
+
+	hevcMP4, err := s.UpsertVideo(domain.VideoAsset{
+		LibraryID:       lib.ID,
+		Title:           "Escape from the 21st Century 2024 2160p WEB-DL H265 HQ AAC",
+		Format:          "mp4",
+		FilePath:        "/library/Movies/Escape from the 21st Century 2024 2160p WEB-DL H265 HQ AAC.mp4",
+		RelPath:         "Movies/Escape from the 21st Century 2024 2160p WEB-DL H265 HQ AAC.mp4",
+		Size:            8192,
+		MTime:           time.Unix(41, 0),
+		ThumbnailStatus: "placeholder",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hevcMP4, err = s.VideoByID(hevcMP4.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hevcMP4.DirectPlayable || hevcMP4.PlaybackMode != "hls" {
+		t.Fatalf("hevc-named mp4 playback = directPlayable %v mode %q, want hls", hevcMP4.DirectPlayable, hevcMP4.PlaybackMode)
 	}
 }
 

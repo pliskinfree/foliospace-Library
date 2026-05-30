@@ -67,6 +67,74 @@ Public. Clears the web auth cookie.
 }
 ```
 
+## First-Run Setup
+
+Release `0.82` supports a web-first setup flow for Docker deployments. A fresh `/config` starts uninitialized until it has an access token and at least one configured library.
+
+Environment variable token auth still has priority. If `FOLIOSPACE_API_TOKEN` is set, `POST /api/setup/initialize` must include that token as a bearer token and the setup page treats the token field as the existing deployment token. If `FOLIOSPACE_API_TOKEN` is empty, setup stores the first user-provided token as a SHA-256 hash in SQLite.
+
+### `GET /api/setup/status`
+
+Returns setup state and container-visible directory roots.
+
+```json
+{
+  "initialized": false,
+  "authEnabled": false,
+  "hasLibraries": false,
+  "tokenConfigured": false,
+  "directoryRoots": [
+    { "name": "library", "path": "/library" },
+    { "name": "books", "path": "/books" },
+    { "name": "games", "path": "/games" }
+  ]
+}
+```
+
+`initialized` is true only when an access token is configured and at least one library exists.
+
+### `POST /api/setup/initialize`
+
+Creates the first library and, when no environment token is configured, saves the first access token.
+
+Request:
+
+```json
+{
+  "token": "change-me-long-token",
+  "name": "Books",
+  "rootPath": "/books",
+  "assetType": "book"
+}
+```
+
+`assetType` can be `mixed`, `book`, `comic`, `game`, or `video`.
+
+Response is the created library:
+
+```json
+{
+  "id": 1,
+  "name": "Books",
+  "rootPath": "/books",
+  "assetType": "book"
+}
+```
+
+### `GET /api/config/directory-roots`
+
+Returns the container-visible roots used by the setup page and directory picker:
+
+```json
+{
+  "roots": [
+    { "name": "library", "path": "/library" }
+  ]
+}
+```
+
+This endpoint reports container paths, not host/NAS paths. Docker volume mappings decide which host paths are visible.
+
 ## Recommended Native Client Flow
 
 1. Call `GET /api/auth/status`.
@@ -80,6 +148,7 @@ Public. Clears the web auth cookie.
 9. Sync private state with `GET/PUT /api/client/books/{bookId}/private-state`.
 10. Sync UI language and reader defaults with `GET/PUT /api/client/preferences`.
 11. Open a game with `GET /api/client/games/{gameId}/manifest`, then use `fileUrl` only through the service.
+12. Open a video with `GET /api/client/videos/{videoId}/manifest`, then stream `fileUrl` through the service with HTTP Range requests.
 
 ## Client Endpoints
 
@@ -92,24 +161,33 @@ Response:
 ```json
 {
   "serviceName": "FolioSpace Library",
+  "serviceVersion": "0.82",
   "apiVersion": "v1",
-  "supportedFormats": ["cbz", "zip", "epub", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"],
+  "supportedFormats": ["cbz", "zip", "epub", "pdf", "mp4", "m4v", "mov", "mkv", "avi", "webm", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"],
   "capabilities": {
     "clientHome": true,
     "unifiedManifest": true,
     "progressSync": true,
     "epubStreaming": true,
+    "pdfStreaming": true,
+    "pdfPageLayout": true,
     "pageStreaming": true,
     "gameShelf": true,
     "gameCatalog": true,
+    "videoCatalog": true,
     "privateState": true,
     "search": true,
     "preferences": true,
     "bearerTokenAuth": true,
-    "scannerJobEvents": true
+    "setupWizard": true,
+    "scannerJobEvents": true,
+    "scannerJobControl": true,
+    "scanSettings": true
   }
 }
 ```
+
+PDF clients should read the manifest through `GET /api/client/books/{bookId}/manifest`, then fetch the PDF through the opaque page URL at `GET /api/books/{bookId}/pages/0`. The server supports HTTP Range requests for that URL, so native clients can stream PDF data without exposing the NAS path. `pdfPageLayout` means clients may offer single-page and two-page spread modes on top of the same PDF stream.
 
 ### `GET /api/client/preferences`
 
@@ -161,6 +239,7 @@ Query:
 
 - `limit`: optional, default `12`, max `50`. Applies to `continueReading`, `recentBooks`, `favoriteBooks`, and `wantToRead`.
 - `gameShelf` uses the same limit and returns recent local ROM assets.
+- `videoShelf` uses the same limit and returns recent local video assets.
 
 Response:
 
@@ -205,6 +284,21 @@ Response:
       "compatibility": "unknown",
       "coverUrl": "/api/games/12/cover",
       "manifestUrl": "/api/client/games/12/manifest"
+    }
+  ],
+  "videoShelf": [
+    {
+      "id": 21,
+      "assetType": "video",
+      "title": "Demo Movie",
+      "format": "mp4",
+      "size": 104857600,
+      "durationSeconds": 0,
+      "width": 0,
+      "height": 0,
+      "thumbnailStatus": "placeholder",
+      "thumbnailUrl": "/api/videos/21/thumbnail",
+      "manifestUrl": "/api/client/videos/21/manifest"
     }
   ],
   "collections": [
@@ -265,6 +359,119 @@ Response:
 ```
 
 Empty results return `items: []` with `total: 0`; the endpoint does not return 404 for an empty catalog. The `items` DTO is the same client-safe game DTO used by `gameShelf`, and never includes NAS paths, local file paths, or Docker volume paths.
+
+### `GET /api/client/videos`
+
+Returns a paginated client-safe video catalog. FolioSpace keeps NAS paths hidden, probes codecs with `ffprobe` when available, and marks each video as direct-playable or HLS-transcode playback.
+
+Query:
+
+- `limit`: optional, default `50`, max `200`.
+- `offset`: optional, default `0`.
+- `q`: optional search against `title`, `relPath`, and `format`.
+- `format`: optional exact format filter, for example `mp4`, `mov`, or `mkv`.
+- `sort`: optional. Supported values are `recent` and `title`. Unknown values fall back to `recent`.
+
+Response:
+
+```json
+{
+  "items": [
+    {
+      "id": 21,
+      "assetType": "video",
+      "title": "Demo Movie",
+      "format": "mp4",
+      "size": 104857600,
+      "durationSeconds": 0,
+      "width": 0,
+      "height": 0,
+      "thumbnailStatus": "placeholder",
+      "thumbnailUrl": "/api/videos/21/thumbnail",
+      "manifestUrl": "/api/client/videos/21/manifest",
+      "directPlayable": true,
+      "playbackMode": "direct",
+      "fileUrl": "/api/client/videos/21/file",
+      "hlsUrl": "/api/client/videos/21/hls/index.m3u8",
+      "transcodeStatusUrl": "/api/client/videos/21/transcode/status"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0,
+  "hasMore": false
+}
+```
+
+### `GET /api/client/videos/{videoId}/manifest`
+
+Returns client-safe video playback metadata. It does not expose the real NAS path.
+
+```json
+{
+  "video": {
+    "id": 21,
+    "assetType": "video",
+    "title": "Demo Movie",
+    "format": "mp4",
+    "size": 104857600,
+    "durationSeconds": 0,
+    "width": 0,
+    "height": 0,
+    "thumbnailStatus": "placeholder",
+    "thumbnailUrl": "/api/videos/21/thumbnail",
+    "manifestUrl": "/api/client/videos/21/manifest",
+    "directPlayable": false,
+    "playbackMode": "hls",
+    "playbackReason": "container or codecs need browser transcode",
+    "fileUrl": "/api/client/videos/21/file",
+    "hlsUrl": "/api/client/videos/21/hls/index.m3u8",
+    "transcodeStatusUrl": "/api/client/videos/21/transcode/status"
+  },
+  "fileUrl": "/api/client/videos/21/file",
+  "hlsUrl": "/api/client/videos/21/hls/index.m3u8",
+  "transcodeStatusUrl": "/api/client/videos/21/transcode/status"
+}
+```
+
+`fileUrl` streams the local file through FolioSpace Library using `http.ServeFile`, so clients can use HTTP Range requests while keeping NAS paths hidden.
+
+If `playbackMode` is `hls`, clients should open `hlsUrl`. The first request to `hlsUrl` starts an on-demand `ffmpeg` transcode into `/config/cache/video-transcodes`; subsequent playback reuses the cached HLS playlist and segments until the source file changes. The built-in transcoder keeps one active video transcode at a time and downscales wide 4K sources to 1080p H.264/AAC HLS for NAS-friendly playback.
+
+### `GET /api/client/videos/{videoId}/transcode/status`
+
+Returns the current HLS cache/transcode state for a video.
+
+```json
+{
+  "videoId": 21,
+  "status": "running",
+  "message": "Transcoding to browser-compatible HLS",
+  "segmentCount": 8
+}
+```
+
+`status` is one of `idle`, `starting`, `running`, `queued`, `ready`, or `failed`. Clients can poll this endpoint while opening HLS playback to show `转码中`, `已缓存`, or a failure state. If another video is already being transcoded, the manifest request can return `409` and this endpoint reports `queued`.
+
+### `GET /api/client/videos/transcode/status`
+
+Returns the active global HLS transcode task. Use this when a selected video reports `queued` and the client wants to show which video is currently occupying the single NAS-friendly transcode slot.
+
+```json
+{
+  "status": "running",
+  "activeVideoId": 88,
+  "activeTitle": "Demo 4K HEVC Movie",
+  "segmentCount": 12,
+  "message": "Transcoding to browser-compatible HLS"
+}
+```
+
+If nothing is currently transcoding, `status` is `idle`.
+
+### `GET /api/videos/{videoId}/thumbnail`
+
+Returns the best available video thumbnail without exposing the NAS path. FolioSpace first looks for local sidecar images next to the video, including `Movie.jpg`, `Movie.poster.jpg`, `Movie.cover.jpg`, `poster.jpg`, and `cover.jpg`. If no local image exists, it extracts a cached JPEG frame with `ffmpeg` into `/config/cache/video-thumbnails`. If extraction is busy or unavailable, it falls back to the built-in SVG placeholder.
 
 ### `GET /api/client/books/{bookId}/manifest`
 
@@ -650,6 +857,26 @@ Lists recent scan jobs.
 
 Lists job events. Events include scan start, worker count, skipped/indexed files, errors, pause/cancel state, and completion.
 
+### `GET /api/settings/scan`
+
+Returns scan runtime settings.
+
+```json
+{
+  "scanWorkers": 4
+}
+```
+
+### `PUT /api/settings/scan`
+
+Saves scan runtime settings and returns the normalized value. `scanWorkers` is currently clamped to the supported server range.
+
+```json
+{
+  "scanWorkers": 8
+}
+```
+
 ### `POST /api/jobs/{jobId}/pause`
 
 Requests pause for a running scan job.
@@ -720,6 +947,7 @@ Good MCP tools:
 - `foliospace.search_books`: search/filter books by title, collection, format, progress, or unread state.
 - `foliospace.open_book_manifest`: return the client manifest for a book.
 - `foliospace.list_games` and `foliospace.open_game_manifest`: browse and open local ROM assets through client-safe DTOs.
+- `foliospace.list_videos` and `foliospace.open_video_manifest`: browse and open local video assets through client-safe DTOs.
 - `foliospace.get_private_state` and `foliospace.save_private_state`: inspect or update status, favorite, rating, tags, and notes.
 - `foliospace.list_favorites` and `foliospace.list_private_status`: browse private shelves such as favorites and want-to-read.
 - `foliospace.get_preferences` and `foliospace.save_preferences`: inspect or update UI language and reader defaults.

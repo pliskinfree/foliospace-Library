@@ -195,6 +195,13 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	if err := os.WriteFile(romPath, []byte("rom-body"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	videoPath := filepath.Join(root, "Movies", "Demo Movie.mp4")
+	if err := os.MkdirAll(filepath.Dir(videoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(videoPath, []byte("video-body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	ts := httptest.NewServer(New(service.New(st), nil).Routes())
 	defer ts.Close()
@@ -228,7 +235,13 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	putJSON(t, ts.URL+"/api/books/"+itoa(cbzBookID)+"/progress", `{"pageIndex":1,"progressFraction":0.5}`)
 
 	infoBody := get(t, ts.URL+"/api/client/info")
-	if !strings.Contains(infoBody, `"apiVersion":"v1"`) || !strings.Contains(infoBody, `"epub"`) {
+	if !strings.Contains(infoBody, `"apiVersion":"v1"`) ||
+		!strings.Contains(infoBody, `"epub"`) ||
+		!strings.Contains(infoBody, `"pdf"`) ||
+		!strings.Contains(infoBody, `"mp4"`) ||
+		!strings.Contains(infoBody, `"videoCatalog":true`) ||
+		!strings.Contains(infoBody, `"pdfPageLayout":true`) ||
+		!strings.Contains(infoBody, `"scanSettings":true`) {
 		t.Fatalf("client info response %q does not include v1 capabilities", infoBody)
 	}
 
@@ -241,6 +254,9 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	}
 	if !strings.Contains(homeBody, `"gameShelf"`) || !strings.Contains(homeBody, `"Super Mario World"`) || strings.Contains(homeBody, "Super Mario World (USA).sfc") {
 		t.Fatalf("client home response %q is missing safe game shelf", homeBody)
+	}
+	if !strings.Contains(homeBody, `"videoShelf"`) || !strings.Contains(homeBody, `"Demo Movie"`) || strings.Contains(homeBody, "Movies/Demo Movie.mp4") {
+		t.Fatalf("client home response %q is missing safe video shelf", homeBody)
 	}
 	if !strings.Contains(homeBody, `"/api/books/`+itoa(cbzBookID)+`/cover"`) {
 		t.Fatalf("client home response %q does not include cover URL", homeBody)
@@ -275,6 +291,39 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	}
 	if !strings.Contains(gameManifestBody, `"assetType":"game"`) || !strings.Contains(gameManifestBody, `"platform":"snes"`) || !strings.Contains(gameManifestBody, `"/api/client/games/`+itoa(games[0].ID)+`/file"`) {
 		t.Fatalf("game client manifest response %q is missing launch metadata", gameManifestBody)
+	}
+
+	videos, err := st.ListRecentVideos(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(videos) != 1 {
+		t.Fatalf("videos = %#v, want one indexed video", videos)
+	}
+	videoManifestBody := get(t, ts.URL+"/api/client/videos/"+itoa(videos[0].ID)+"/manifest")
+	if strings.Contains(videoManifestBody, root) || strings.Contains(videoManifestBody, "filePath") {
+		t.Fatalf("video client manifest leaked file path: %q", videoManifestBody)
+	}
+	if !strings.Contains(videoManifestBody, `"assetType":"video"`) || !strings.Contains(videoManifestBody, `"format":"mp4"`) || !strings.Contains(videoManifestBody, `"/api/client/videos/`+itoa(videos[0].ID)+`/file"`) {
+		t.Fatalf("video client manifest response %q is missing stream metadata", videoManifestBody)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/client/videos/"+itoa(videos[0].ID)+"/file", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Range", "bytes=0-4")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusPartialContent || string(data) != "video" {
+		t.Fatalf("video range status=%d body=%q, want 206 video", resp.StatusCode, data)
 	}
 }
 
@@ -375,6 +424,78 @@ func TestAPIClientGamesPage(t *testing.T) {
 	empty := authGet(t, ts.URL+"/api/client/games?q=missing", "secret")
 	if !strings.Contains(empty, `"items":[]`) || !strings.Contains(empty, `"total":0`) {
 		t.Fatalf("empty client games page = %q, want empty list response", empty)
+	}
+}
+
+func TestAPIClientVideosPage(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	lib, err := st.CreateLibraryWithType("Videos", "/library", "video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, video := range []domain.VideoAsset{
+		{LibraryID: lib.ID, Title: "Alpha Movie", Format: "mp4", FilePath: "/library/Alpha Movie.mp4", RelPath: "Alpha Movie.mp4", Size: 1024, MTime: time.Unix(31, 0), VideoCodec: "h264", AudioCodec: "aac", ThumbnailStatus: "placeholder"},
+		{LibraryID: lib.ID, Title: "Beta Clip", Format: "mkv", FilePath: "/library/Beta Clip.mkv", RelPath: "Beta Clip.mkv", Size: 2048, MTime: time.Unix(32, 0), VideoCodec: "hevc", AudioCodec: "dts", ThumbnailStatus: "placeholder"},
+	} {
+		if _, err := st.UpsertVideo(video); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ts := httptest.NewServer(NewWithOptions(service.New(st), nil, Options{APIToken: "secret"}).Routes())
+	defer ts.Close()
+
+	unauthorized, err := http.Get(ts.URL + "/api/client/videos?limit=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status = %d, want 401", unauthorized.StatusCode)
+	}
+
+	body := authGet(t, ts.URL+"/api/client/videos?limit=1&offset=0&sort=title", "secret")
+	if strings.Contains(body, "/library") || strings.Contains(body, "filePath") || strings.Contains(body, "relPath") {
+		t.Fatalf("client videos leaked internal path: %q", body)
+	}
+	if !strings.Contains(body, `"total":2`) || !strings.Contains(body, `"limit":1`) || !strings.Contains(body, `"hasMore":true`) || !strings.Contains(body, `"title":"Alpha Movie"`) {
+		t.Fatalf("client videos page %q missing pagination metadata or title sort", body)
+	}
+	if !strings.Contains(body, `"/api/client/videos/`) || !strings.Contains(body, `/manifest"`) || !strings.Contains(body, `/transcode/status"`) || !strings.Contains(body, `"/api/videos/`) {
+		t.Fatalf("client videos page %q missing manifestUrl, transcodeStatusUrl, or thumbnailUrl", body)
+	}
+
+	filtered := authGet(t, ts.URL+"/api/client/videos?q=beta&format=mkv", "secret")
+	if !strings.Contains(filtered, `"title":"Beta Clip"`) || !strings.Contains(filtered, `"total":1`) || !strings.Contains(filtered, `"hasMore":false`) {
+		t.Fatalf("filtered client videos page = %q, want one-item response", filtered)
+	}
+	if !strings.Contains(filtered, `"directPlayable":false`) || !strings.Contains(filtered, `"playbackMode":"hls"`) {
+		t.Fatalf("filtered client videos page = %q, want hls playback hint for mkv", filtered)
+	}
+
+	videos, err := st.ListVideosPage(domain.VideoListOptions{Limit: 10, Sort: "title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alphaManifest := authGet(t, ts.URL+"/api/client/videos/"+itoa(videos.Items[0].ID)+"/manifest", "secret")
+	if !strings.Contains(alphaManifest, `"directPlayable":true`) || !strings.Contains(alphaManifest, `"playbackMode":"direct"`) || !strings.Contains(alphaManifest, `"fileUrl":"/api/client/videos/`) {
+		t.Fatalf("alpha video manifest = %q, want direct playback metadata", alphaManifest)
+	}
+	betaManifest := authGet(t, ts.URL+"/api/client/videos/"+itoa(videos.Items[1].ID)+"/manifest", "secret")
+	if !strings.Contains(betaManifest, `"directPlayable":false`) || !strings.Contains(betaManifest, `"playbackMode":"hls"`) || !strings.Contains(betaManifest, `"hlsUrl":"/api/client/videos/`) || !strings.Contains(betaManifest, `"transcodeStatusUrl":"/api/client/videos/`) {
+		t.Fatalf("beta video manifest = %q, want hls playback metadata", betaManifest)
+	}
+	betaStatus := authGet(t, ts.URL+"/api/client/videos/"+itoa(videos.Items[1].ID)+"/transcode/status", "secret")
+	if !strings.Contains(betaStatus, `"status":"idle"`) || !strings.Contains(betaStatus, `"segmentCount":0`) {
+		t.Fatalf("beta video transcode status = %q, want idle status", betaStatus)
+	}
+	queueStatus := authGet(t, ts.URL+"/api/client/videos/transcode/status", "secret")
+	if !strings.Contains(queueStatus, `"status":"idle"`) || !strings.Contains(queueStatus, `"segmentCount":0`) {
+		t.Fatalf("video transcode queue status = %q, want idle status", queueStatus)
 	}
 }
 
@@ -520,6 +641,32 @@ func TestClientAPIPreferences(t *testing.T) {
 	}
 }
 
+func TestScanSettingsAPI(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	defaultBody := get(t, ts.URL+"/api/settings/scan")
+	if !strings.Contains(defaultBody, `"scanWorkers":1`) {
+		t.Fatalf("default scan settings = %q, want one worker", defaultBody)
+	}
+
+	updatedBody := putJSONBody(t, ts.URL+"/api/settings/scan", `{"scanWorkers":99}`)
+	if !strings.Contains(updatedBody, `"scanWorkers":8`) {
+		t.Fatalf("updated scan settings = %q, want clamped workers", updatedBody)
+	}
+
+	savedBody := get(t, ts.URL+"/api/settings/scan")
+	if savedBody != updatedBody {
+		t.Fatalf("saved settings = %q, want %q", savedBody, updatedBody)
+	}
+}
+
 func TestAPICreatesGameTypedLibraryForZipROMSets(t *testing.T) {
 	root := t.TempDir()
 	makeZip(t, filepath.Join(root, "Arcade", "mslug.zip"), map[string]string{"mslug.rom": "rom"})
@@ -552,6 +699,175 @@ func TestAPICreatesGameTypedLibraryForZipROMSets(t *testing.T) {
 	gamesBody := get(t, ts.URL+"/api/games/recent")
 	if !strings.Contains(gamesBody, `"title":"mslug"`) || !strings.Contains(gamesBody, `"format":"zip"`) || strings.Contains(gamesBody, root) {
 		t.Fatalf("games response %q is missing safe zip ROM set", gamesBody)
+	}
+}
+
+func TestAPICreatesVideoTypedLibrary(t *testing.T) {
+	root := t.TempDir()
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	body := postJSONBody(t, ts.URL+"/api/libraries", `{"name":"Videos","rootPath":"`+root+`","assetType":"video"}`)
+	if !strings.Contains(body, `"assetType":"video"`) {
+		t.Fatalf("library response %q does not include video asset type", body)
+	}
+}
+
+func TestSetupStatusAndInitializeStoresTokenAndLibrary(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	statusBody := get(t, ts.URL+"/api/setup/status")
+	if !strings.Contains(statusBody, `"initialized":false`) ||
+		!strings.Contains(statusBody, `"authEnabled":false`) ||
+		!strings.Contains(statusBody, root) {
+		t.Fatalf("setup status = %q, want uninitialized status with directory roots", statusBody)
+	}
+
+	initResp, err := http.Post(ts.URL+"/api/setup/initialize", "application/json", strings.NewReader(`{"token":"secret-token","name":"Books","rootPath":"`+root+`","assetType":"book"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	initData, err := io.ReadAll(initResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = initResp.Body.Close()
+	if initResp.StatusCode >= 400 {
+		t.Fatalf("POST setup initialize status %d: %s", initResp.StatusCode, initData)
+	}
+	initBody := string(initData)
+	if !strings.Contains(initBody, `"name":"Books"`) || !strings.Contains(initBody, `"assetType":"book"`) {
+		t.Fatalf("initialize response = %q, want created book library", initBody)
+	}
+	if len(initResp.Cookies()) == 0 || initResp.Cookies()[0].Name != authCookieName {
+		t.Fatalf("initialize cookies = %+v, want auth cookie", initResp.Cookies())
+	}
+
+	authBody := get(t, ts.URL+"/api/auth/status")
+	if !strings.Contains(authBody, `"enabled":true`) {
+		t.Fatalf("auth status = %q, want DB token enabled", authBody)
+	}
+	resp, err := http.Get(ts.URL + "/api/collections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated collections status = %d, want 401", resp.StatusCode)
+	}
+	collectionsBody := authGet(t, ts.URL+"/api/collections", "secret-token")
+	if strings.Contains(collectionsBody, "Unauthorized") {
+		t.Fatalf("authorized collections response = %q", collectionsBody)
+	}
+	cookieReq, err := http.NewRequest(http.MethodGet, ts.URL+"/api/collections", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cookie := range initResp.Cookies() {
+		cookieReq.AddCookie(cookie)
+	}
+	cookieResp, err := http.DefaultClient.Do(cookieReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cookieResp.Body.Close()
+	if cookieResp.StatusCode != http.StatusOK {
+		t.Fatalf("cookie-authenticated collections status = %d, want 200", cookieResp.StatusCode)
+	}
+}
+
+func TestSetupInitializeRequiresEnvTokenWhenConfigured(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(NewWithOptions(service.New(st), nil, Options{APIToken: "env-secret"}).Routes())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/setup/initialize", "application/json", strings.NewReader(`{"name":"Books","rootPath":"`+root+`","assetType":"book"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated initialize status = %d, want 401", resp.StatusCode)
+	}
+
+	body := postJSONBodyWithToken(t, ts.URL+"/api/setup/initialize", `{"name":"Books","rootPath":"`+root+`","assetType":"book"}`, "env-secret")
+	if !strings.Contains(body, `"name":"Books"`) {
+		t.Fatalf("authenticated initialize response = %q, want created library", body)
+	}
+}
+
+func TestSetupInitializeCanSecureExistingLibrary(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	svc := service.New(st)
+	ts := httptest.NewServer(New(svc, nil).Routes())
+	defer ts.Close()
+	existing, err := svc.CreateLibraryWithType("Existing", root, "book")
+	if err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+
+	statusBody := get(t, ts.URL+"/api/setup/status")
+	if !strings.Contains(statusBody, `"initialized":false`) ||
+		!strings.Contains(statusBody, `"hasLibraries":true`) ||
+		!strings.Contains(statusBody, `"tokenConfigured":false`) {
+		t.Fatalf("unexpected setup status: %s", statusBody)
+	}
+
+	body := postJSONBody(t, ts.URL+"/api/setup/initialize", `{"token":"secret-token"}`)
+	if !strings.Contains(body, `"id":`+itoa(existing.ID)) || !strings.Contains(body, `"name":"Existing"`) {
+		t.Fatalf("initialize existing response = %q, want existing library", body)
+	}
+
+	authBody := get(t, ts.URL+"/api/auth/status")
+	if !strings.Contains(authBody, `"enabled":true`) {
+		t.Fatalf("expected auth enabled after securing existing library, got %s", authBody)
+	}
+}
+
+func TestConfigDirectoryRootsListsContainerRoots(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("FOLIOSPACE_DIRECTORY_ROOTS", root)
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	body := get(t, ts.URL+"/api/config/directory-roots")
+	if !strings.Contains(body, `"roots"`) || !strings.Contains(body, root) {
+		t.Fatalf("directory roots response = %q, want configured root", body)
 	}
 }
 
@@ -672,6 +988,29 @@ func post(t *testing.T, url string, body string) {
 func postJSONBody(t *testing.T, url string, body string) string {
 	t.Helper()
 	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode >= 400 {
+		t.Fatalf("POST %s status %d: %s", url, resp.StatusCode, data)
+	}
+	return string(data)
+}
+
+func postJSONBodyWithToken(t *testing.T, url string, body string, token string) string {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

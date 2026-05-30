@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -25,7 +27,13 @@ func TestServerListsTools(t *testing.T) {
 	if !strings.Contains(body, "foliospace.client_info") ||
 		!strings.Contains(body, "foliospace.list_games") ||
 		!strings.Contains(body, "foliospace.open_game_manifest") ||
+		!strings.Contains(body, "foliospace.list_videos") ||
+		!strings.Contains(body, "foliospace.open_video_manifest") ||
+		!strings.Contains(body, "foliospace.get_video_transcode_status") ||
+		!strings.Contains(body, "foliospace.get_video_transcode_queue") ||
 		!strings.Contains(body, "foliospace.list_favorites") ||
+		!strings.Contains(body, "foliospace.get_scan_settings") ||
+		!strings.Contains(body, "foliospace.save_scan_settings") ||
 		!strings.Contains(body, "foliospace.list_collection_volumes") ||
 		!strings.Contains(body, "foliospace.pause_job") ||
 		!strings.Contains(body, "foliospace.library_health") {
@@ -102,6 +110,76 @@ func TestServerCallsClientGamesTool(t *testing.T) {
 	}
 	if gotPath != "/api/client/games?format=nes&limit=50&offset=100&platform=nes&q=contra&sort=title" {
 		t.Fatalf("path = %s, want client games query", gotPath)
+	}
+}
+
+func TestServerCallsClientVideosTools(t *testing.T) {
+	var paths []string
+	server := New("http://foliospace.test", "")
+	server.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.RequestURI())
+		if strings.Contains(r.URL.Path, "/manifest") {
+			return jsonResponse(`{"video":{"id":21},"fileUrl":"/api/client/videos/21/file"}`), nil
+		}
+		if strings.Contains(r.URL.Path, "/transcode/status") {
+			if r.URL.Path == "/api/client/videos/transcode/status" {
+				return jsonResponse(`{"status":"idle","segmentCount":0}`), nil
+			}
+			return jsonResponse(`{"videoId":21,"status":"idle","segmentCount":0}`), nil
+		}
+		return jsonResponse(`{"items":[],"total":0,"limit":50,"offset":0,"hasMore":false}`), nil
+	})}
+
+	listResponse := server.Handle(context.Background(), toolCall(t, "foliospace.list_videos", map[string]any{
+		"limit":  50,
+		"offset": 100,
+		"q":      "movie",
+		"format": "mp4",
+		"sort":   "title",
+	}))
+	if listResponse.Error != nil {
+		t.Fatalf("list videos error = %#v", listResponse.Error)
+	}
+	manifestResponse := server.Handle(context.Background(), toolCall(t, "foliospace.open_video_manifest", map[string]any{"videoId": 21}))
+	if manifestResponse.Error != nil {
+		t.Fatalf("open video manifest error = %#v", manifestResponse.Error)
+	}
+	statusResponse := server.Handle(context.Background(), toolCall(t, "foliospace.get_video_transcode_status", map[string]any{"videoId": 21}))
+	if statusResponse.Error != nil {
+		t.Fatalf("video transcode status error = %#v", statusResponse.Error)
+	}
+	queueResponse := server.Handle(context.Background(), toolCall(t, "foliospace.get_video_transcode_queue", map[string]any{}))
+	if queueResponse.Error != nil {
+		t.Fatalf("video transcode queue error = %#v", queueResponse.Error)
+	}
+
+	want := "/api/client/videos?format=mp4&limit=50&offset=100&q=movie&sort=title\n/api/client/videos/21/manifest\n/api/client/videos/21/transcode/status\n/api/client/videos/transcode/status"
+	if got := strings.Join(paths, "\n"); got != want {
+		t.Fatalf("paths = %q, want %q", got, want)
+	}
+}
+
+func TestServerCallsScanSettingsTools(t *testing.T) {
+	var calls []string
+	server := New("http://foliospace.test", "")
+	server.httpClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		return jsonResponse(`{"scanWorkers":4}`), nil
+	})}
+
+	getResponse := server.Handle(context.Background(), toolCall(t, "foliospace.get_scan_settings", nil))
+	if getResponse.Error != nil {
+		t.Fatalf("get scan settings error = %#v", getResponse.Error)
+	}
+	saveResponse := server.Handle(context.Background(), toolCall(t, "foliospace.save_scan_settings", map[string]any{"scanWorkers": 4}))
+	if saveResponse.Error != nil {
+		t.Fatalf("save scan settings error = %#v", saveResponse.Error)
+	}
+
+	got := strings.Join(calls, "\n")
+	want := "GET /api/settings/scan\nPUT /api/settings/scan"
+	if got != want {
+		t.Fatalf("calls = %q, want %q", got, want)
 	}
 }
 
@@ -197,6 +275,43 @@ func TestServerAggregatesLibraryHealth(t *testing.T) {
 	body := mustJSON(t, response.Result)
 	if !strings.Contains(body, `\"jobCount\": 2`) || !strings.Contains(body, `\"errorCount\": 1`) {
 		t.Fatalf("health response %s missing summary", body)
+	}
+}
+
+func TestServerServeAcceptsJSONLineTransport(t *testing.T) {
+	server := New("http://example.test", "")
+	input := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"hermes","version":"0.1.0"}}}` + "\n")
+	var output bytes.Buffer
+
+	if err := server.Serve(context.Background(), input, &output); err != nil {
+		t.Fatalf("Serve error = %v", err)
+	}
+
+	got := output.String()
+	if strings.Contains(got, "Content-Length") {
+		t.Fatalf("JSON-line transport wrote framed response: %q", got)
+	}
+	if !strings.Contains(got, `"result"`) || !strings.Contains(got, `"protocolVersion":"2024-11-05"`) {
+		t.Fatalf("JSON-line response = %q, want initialize result", got)
+	}
+}
+
+func TestServerServeAcceptsFramedTransport(t *testing.T) {
+	server := New("http://example.test", "")
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"codex","version":"0.1.0"}}}`)
+	input := strings.NewReader("Content-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + string(body))
+	var output bytes.Buffer
+
+	if err := server.Serve(context.Background(), input, &output); err != nil {
+		t.Fatalf("Serve error = %v", err)
+	}
+
+	got := output.String()
+	if !strings.HasPrefix(got, "Content-Length: ") {
+		t.Fatalf("framed transport wrote non-framed response: %q", got)
+	}
+	if !strings.Contains(got, `"result"`) || !strings.Contains(got, `"protocolVersion":"2024-11-05"`) {
+		t.Fatalf("framed response = %q, want initialize result", got)
 	}
 }
 
