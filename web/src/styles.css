@@ -1677,7 +1677,7 @@ button.danger:hover {
   z-index: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: clamp(10px, 2vw, 24px) 0 clamp(24px, 3vw, 44px);
+  padding: clamp(10px, 2vw, 24px) clamp(10px, 2.4vw, 28px) clamp(24px, 3vw, 44px);
   scroll-behavior: smooth;
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0.035), transparent 18%, transparent 82%, rgba(255, 255, 255, 0.035)),
@@ -1693,11 +1693,21 @@ button.danger:hover {
 
 .webtoonPage img {
   display: block;
-  width: min(100%, 980px);
+  width: min(100%, 760px);
   height: auto;
   max-width: 100%;
   user-select: none;
   -webkit-user-drag: none;
+}
+
+@media (max-width: 760px) {
+  .webtoonReader {
+    padding-inline: 0;
+  }
+
+  .webtoonPage img {
+    width: 100%;
+  }
 }
 
 .pageStage.epub {
