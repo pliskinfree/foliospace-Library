@@ -1,7 +1,7 @@
 services:
   foliospace-library:
     build: .
-    image: foliospace-library:0.885
+    image: foliospace-library:0.90
     ports:
       - "8080:8080"
     volumes:
