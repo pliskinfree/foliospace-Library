@@ -1,5 +1,9 @@
 # FolioSpace Library
 
+[Website](https://foliospace.app/) · [Docker Hub](https://hub.docker.com/r/funland/foliospace-library) · [Client API](docs/api/client-v1.md) · [MCP](docs/mcp/usage.md)
+
+![FolioSpace Library hero](docs/screenshots/hero.png)
+
 FolioSpace Library is a personal digital asset library that runs on a NAS, Docker host, or local server. It provides a unified indexing layer and stable client service layer for Apple-device experiences across reading, games, spatial media, documents, photos, videos, and related audio collections.
 
 It is not trying to become a complete Plex, Jellyfin, or Immich replacement. The first priority is personal asset indexing: scanning, identifying, covers/thumbnails, classification, search, favorites, recent access, progress, and private state. Dedicated clients such as a reader app, GameEMU, and Vision Pro experiences own the actual consumption UI.
@@ -7,6 +11,16 @@ It is not trying to become a complete Plex, Jellyfin, or Immich replacement. The
 The current implementation still starts from the FolioSpace Reader codebase and keeps the existing reading MVP operational while the model evolves toward `Asset` / `LibraryItem`.
 
 Current release branch: `0.881`.
+
+## Screenshots
+
+![Unified home](docs/screenshots/home.png)
+
+![Reader mode](docs/screenshots/reader.png)
+
+![NAS and API](docs/screenshots/nas-api.png)
+
+![Game and video libraries](docs/screenshots/game-video.png)
 
 ## License
 
