@@ -674,7 +674,11 @@ export function App() {
   }, [loadBooksPage, selectedSeries]);
 
   function resetProfileScopedViewState() {
+    setView("library");
     setSelectedBook(null);
+    setSelectedVideo(null);
+    setVideoTranscodeStatus(null);
+    setVideoTranscodeQueueStatus(null);
     setPages([]);
     setEpubManifest(null);
     setBookDetailsOpen(false);
@@ -698,6 +702,18 @@ export function App() {
     setGlobalBooks([]);
   }
 
+  async function leaveProfileScopedSurface() {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // The profile switch still needs to continue and return to Home.
+    }
+    setReaderFullscreen(false);
+    resetProfileScopedViewState();
+  }
+
   async function reloadSelectedSeries() {
     if (!selectedSeries) return;
     await loadBooksPage(selectedSeries, 0, true);
@@ -709,7 +725,7 @@ export function App() {
     setProfileSaving(true);
     persistActiveProfileId(profileID);
     setActiveProfileId(profileID);
-    resetProfileScopedViewState();
+    await leaveProfileScopedSurface();
     setStatus(t.profileSwitching);
     try {
       await refreshAll(true);
@@ -731,7 +747,7 @@ export function App() {
       const profile = await api.createProfile(trimmedName);
       persistActiveProfileId(profile.id);
       setActiveProfileId(profile.id);
-      resetProfileScopedViewState();
+      await leaveProfileScopedSurface();
       await refreshAll(true);
       await reloadSelectedSeries();
       setStatus(t.profileCreated(profile.name));
