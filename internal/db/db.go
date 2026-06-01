@@ -48,6 +48,8 @@ func Migrate(conn *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS profiles (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
+			avatar TEXT NOT NULL DEFAULT 'reader',
+			color TEXT NOT NULL DEFAULT 'teal',
 			is_default INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -271,6 +273,12 @@ func Migrate(conn *sql.DB) error {
 		return err
 	}
 	if err := addColumnIfMissing(conn, "libraries", "asset_type", "TEXT NOT NULL DEFAULT 'mixed'"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(conn, "profiles", "avatar", "TEXT NOT NULL DEFAULT 'reader'"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(conn, "profiles", "color", "TEXT NOT NULL DEFAULT 'teal'"); err != nil {
 		return err
 	}
 	if _, err := conn.Exec(`INSERT OR IGNORE INTO profile_read_progress(profile_id, book_id, page_index, locator, progress_fraction, updated_at)

@@ -19,6 +19,8 @@ export type DirectoryListing = {
 export type Profile = {
   id: number;
   name: string;
+  avatar: string;
+  color: string;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
@@ -366,10 +368,15 @@ export const api = {
     }),
   directoryRoots: () => request<{ roots: DirectoryEntry[] }>("/api/config/directory-roots"),
   profiles: () => request<Profile[]>("/api/profiles"),
-  createProfile: (name: string) =>
+  createProfile: (name: string, avatar?: string, color?: string) =>
     request<Profile>("/api/profiles", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, avatar, color }),
+    }),
+  updateProfile: (profileId: number, input: { name: string; avatar?: string; color?: string }) =>
+    request<Profile>(`/api/profiles/${profileId}`, {
+      method: "PUT",
+      body: JSON.stringify(input),
     }),
   renameProfile: (profileId: number, name: string) =>
     request<Profile>(`/api/profiles/${profileId}`, {

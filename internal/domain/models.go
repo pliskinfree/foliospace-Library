@@ -41,6 +41,8 @@ type DirectoryListing struct {
 type Profile struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
+	Avatar    string    `json:"avatar"`
+	Color     string    `json:"color"`
 	IsDefault bool      `json:"isDefault"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

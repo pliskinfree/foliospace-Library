@@ -147,7 +147,7 @@ func TestStoreCreatesDefaultProfileAndIsolatesProfileState(t *testing.T) {
 	if defaultProfile.ID == 0 || !defaultProfile.IsDefault || defaultProfile.Name == "" {
 		t.Fatalf("default profile = %#v, want named default profile", defaultProfile)
 	}
-	guestProfile, err := s.CreateProfile("Guest")
+	guestProfile, err := s.CreateProfile("Guest", "comic", "amber")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestStoreScopesClientPreferencesByProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	guestProfile, err := s.CreateProfile("Guest")
+	guestProfile, err := s.CreateProfile("Guest", "comic", "amber")
 	if err != nil {
 		t.Fatal(err)
 	}

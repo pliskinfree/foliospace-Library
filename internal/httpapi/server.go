@@ -172,13 +172,15 @@ func (s *Server) handleProfiles(w http.ResponseWriter, r *http.Request) {
 		writeJSONOrError(w, profiles, err)
 	case http.MethodPost:
 		var req struct {
-			Name string `json:"name"`
+			Name   string `json:"name"`
+			Avatar string `json:"avatar"`
+			Color  string `json:"color"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		profile, err := s.service.CreateProfile(req.Name)
+		profile, err := s.service.CreateProfile(req.Name, req.Avatar, req.Color)
 		writeJSONOrError(w, profile, err)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -194,13 +196,15 @@ func (s *Server) handleProfileAction(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPut:
 		var req struct {
-			Name string `json:"name"`
+			Name   string `json:"name"`
+			Avatar string `json:"avatar"`
+			Color  string `json:"color"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		profile, err := s.service.RenameProfile(id, req.Name)
+		profile, err := s.service.UpdateProfile(id, req.Name, req.Avatar, req.Color)
 		writeJSONOrError(w, profile, err)
 	case http.MethodDelete:
 		writeJSONOrError(w, map[string]bool{"ok": true}, s.service.DeleteProfile(id))

@@ -21,12 +21,12 @@ func New(db *sql.DB) *Store {
 }
 
 func (s *Store) DefaultProfile() (domain.Profile, error) {
-	row := s.db.QueryRow(`SELECT id, name, is_default, created_at, updated_at FROM profiles WHERE is_default = 1 ORDER BY id LIMIT 1`)
+	row := s.db.QueryRow(`SELECT id, name, avatar, color, is_default, created_at, updated_at FROM profiles WHERE is_default = 1 ORDER BY id LIMIT 1`)
 	return scanProfile(row)
 }
 
 func (s *Store) ProfileByID(profileID int64) (domain.Profile, error) {
-	row := s.db.QueryRow(`SELECT id, name, is_default, created_at, updated_at FROM profiles WHERE id = ?`, profileID)
+	row := s.db.QueryRow(`SELECT id, name, avatar, color, is_default, created_at, updated_at FROM profiles WHERE id = ?`, profileID)
 	return scanProfile(row)
 }
 
@@ -46,7 +46,7 @@ func (s *Store) ResolveProfileID(profileID int64) (int64, error) {
 }
 
 func (s *Store) ListProfiles() ([]domain.Profile, error) {
-	rows, err := s.db.Query(`SELECT id, name, is_default, created_at, updated_at FROM profiles ORDER BY is_default DESC, name, id`)
+	rows, err := s.db.Query(`SELECT id, name, avatar, color, is_default, created_at, updated_at FROM profiles ORDER BY is_default DESC, name, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -63,12 +63,14 @@ func (s *Store) ListProfiles() ([]domain.Profile, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) CreateProfile(name string) (domain.Profile, error) {
+func (s *Store) CreateProfile(name string, avatar string, color string) (domain.Profile, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "Profile"
 	}
-	result, err := s.db.Exec(`INSERT INTO profiles(name, is_default) VALUES(?, 0)`, name)
+	avatar = normalizeProfileAvatar(avatar)
+	color = normalizeProfileColor(color)
+	result, err := s.db.Exec(`INSERT INTO profiles(name, avatar, color, is_default) VALUES(?, ?, ?, 0)`, name, avatar, color)
 	if err != nil {
 		return domain.Profile{}, err
 	}
@@ -79,15 +81,25 @@ func (s *Store) CreateProfile(name string) (domain.Profile, error) {
 	return s.ProfileByID(id)
 }
 
-func (s *Store) RenameProfile(profileID int64, name string) (domain.Profile, error) {
+func (s *Store) UpdateProfile(profileID int64, name string, avatar string, color string) (domain.Profile, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "Profile"
 	}
-	if _, err := s.db.Exec(`UPDATE profiles SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, name, profileID); err != nil {
+	avatar = normalizeProfileAvatar(avatar)
+	color = normalizeProfileColor(color)
+	if _, err := s.db.Exec(`UPDATE profiles SET name = ?, avatar = ?, color = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, name, avatar, color, profileID); err != nil {
 		return domain.Profile{}, err
 	}
 	return s.ProfileByID(profileID)
+}
+
+func (s *Store) RenameProfile(profileID int64, name string) (domain.Profile, error) {
+	profile, err := s.ProfileByID(profileID)
+	if err != nil {
+		return domain.Profile{}, err
+	}
+	return s.UpdateProfile(profileID, name, profile.Avatar, profile.Color)
 }
 
 func (s *Store) DeleteProfile(profileID int64) error {
@@ -1674,13 +1686,33 @@ func scanProfile(row scanner) (domain.Profile, error) {
 	var isDefault int
 	var created string
 	var updated string
-	if err := row.Scan(&profile.ID, &profile.Name, &isDefault, &created, &updated); err != nil {
+	if err := row.Scan(&profile.ID, &profile.Name, &profile.Avatar, &profile.Color, &isDefault, &created, &updated); err != nil {
 		return profile, err
 	}
+	profile.Avatar = normalizeProfileAvatar(profile.Avatar)
+	profile.Color = normalizeProfileColor(profile.Color)
 	profile.IsDefault = isDefault != 0
 	profile.CreatedAt = parseTime(created)
 	profile.UpdatedAt = parseTime(updated)
 	return profile, nil
+}
+
+func normalizeProfileAvatar(value string) string {
+	switch strings.TrimSpace(value) {
+	case "reader", "comic", "game", "movie", "star", "archive", "coffee", "rocket":
+		return strings.TrimSpace(value)
+	default:
+		return "reader"
+	}
+}
+
+func normalizeProfileColor(value string) string {
+	switch strings.TrimSpace(value) {
+	case "teal", "amber", "violet", "rose", "blue", "green", "slate", "copper":
+		return strings.TrimSpace(value)
+	default:
+		return "teal"
+	}
 }
 
 func normalizeLibraryAssetType(value string) string {

@@ -82,6 +82,7 @@ export function App() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState(0);
   const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [readerLoadState, setReaderLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [readerRetryKey, setReaderRetryKey] = useState(0);
   const [readerPageMode, setReaderPageMode] = useState<ReaderPageMode>(initialPreferences.readerPageMode);
@@ -722,6 +723,7 @@ export function App() {
   async function switchProfile(profileID: number) {
     if (!profileID || profileID === activeProfileId || profileSaving) return;
     const targetProfile = profiles.find((profile) => profile.id === profileID) ?? null;
+    setProfileMenuOpen(false);
     setProfileSaving(true);
     persistActiveProfileId(profileID);
     setActiveProfileId(profileID);
@@ -744,7 +746,8 @@ export function App() {
     if (!trimmedName) return;
     setProfileSaving(true);
     try {
-      const profile = await api.createProfile(trimmedName);
+      const preset = profilePresetForIndex(profiles.length);
+      const profile = await api.createProfile(trimmedName, preset.avatar, preset.color);
       persistActiveProfileId(profile.id);
       setActiveProfileId(profile.id);
       await leaveProfileScopedSurface();
@@ -768,6 +771,20 @@ export function App() {
       const profile = await api.renameProfile(activeProfile.id, trimmedName);
       setProfiles((items) => items.map((item) => item.id === profile.id ? profile : item));
       setStatus(t.profileRenamed(profile.name));
+    } catch (error) {
+      handleAPIError(error);
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function updateActiveProfileStyle(avatar: string, color: string) {
+    if (!activeProfile || profileSaving) return;
+    setProfileSaving(true);
+    try {
+      const profile = await api.updateProfile(activeProfile.id, { name: activeProfile.name, avatar, color });
+      setProfiles((items) => items.map((item) => item.id === profile.id ? profile : item));
+      setStatus(t.profileStyled(profile.name));
     } catch (error) {
       handleAPIError(error);
     } finally {
@@ -1375,30 +1392,61 @@ export function App() {
         <header className="topbar">
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.searchLibrary} />
           <div className="profileControls" aria-label={t.profile}>
-            <span className="profileAvatarIcon" title={t.profile} aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
-                <path d="M4.5 20a7.5 7.5 0 0 1 15 0" />
-              </svg>
-            </span>
-            <select
-              className="profileSelect"
-              style={{ width: profileSelectWidth(activeProfileLabel) }}
-              value={activeProfile?.id ?? ""}
-              onChange={(event) => switchProfile(Number(event.target.value))}
+            <button
+              type="button"
+              className="profileMenuButton"
+              onClick={() => setProfileMenuOpen((value) => !value)}
               disabled={profileSaving || profiles.length === 0}
               aria-label={t.profile}
+              aria-expanded={profileMenuOpen}
             >
-              {profiles.length === 0 ? (
-                <option value="">{t.defaultProfile}</option>
-              ) : (
-                profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profileDisplayName(profile, t)}
-                  </option>
-                ))
-              )}
-            </select>
+              {activeProfile ? <ProfileAvatar profile={activeProfile} /> : <ProfileAvatar profile={fallbackProfile(t.defaultProfile)} />}
+              <span>{activeProfileLabel}</span>
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            {profileMenuOpen && (
+              <div className="profilePanel" role="menu">
+                <div className="profilePanelHeader">
+                  <strong>{t.profile}</strong>
+                  <small>{t.profileSharedLibrary}</small>
+                </div>
+                <div className="profileGrid">
+                  {profiles.map((profile) => (
+                    <button
+                      type="button"
+                      key={profile.id}
+                      className={profile.id === activeProfile?.id ? "profileCard selected" : "profileCard"}
+                      onClick={() => switchProfile(profile.id)}
+                      disabled={profileSaving}
+                    >
+                      <ProfileAvatar profile={profile} />
+                      <span>{profileDisplayName(profile, t)}</span>
+                    </button>
+                  ))}
+                </div>
+                {activeProfile && (
+                  <div className="profileStylePanel">
+                    <small>{t.profileStyle}</small>
+                    <div className="profilePresetGrid">
+                      {profilePresets.map((preset) => (
+                        <button
+                          type="button"
+                          key={`${preset.avatar}-${preset.color}`}
+                          className={activeProfile.avatar === preset.avatar && activeProfile.color === preset.color ? "selected" : ""}
+                          onClick={() => updateActiveProfileStyle(preset.avatar, preset.color)}
+                          disabled={profileSaving}
+                          title={preset.label}
+                        >
+                          <ProfileAvatar profile={{ ...activeProfile, avatar: preset.avatar, color: preset.color }} />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <button type="button" className="profileIconButton" onClick={createProfile} disabled={profileSaving} title={t.newProfile} aria-label={t.newProfile}>
               +
             </button>
@@ -3001,6 +3049,9 @@ const translations = {
     profileSwitched: (name: string) => `已切换到 ${name}`,
     profileCreated: (name: string) => `已创建用户 ${name}`,
     profileRenamed: (name: string) => `已重命名为 ${name}`,
+    profileStyled: (name: string) => `已更新 ${name} 的角色`,
+    profileStyle: "角色样式",
+    profileSharedLibrary: "书库共用，进度和收藏独立保存。",
     library: "首页",
     reader: "阅读器",
     jobs: "任务",
@@ -3168,6 +3219,9 @@ const translations = {
     profileSwitched: (name: string) => `已切換到 ${name}`,
     profileCreated: (name: string) => `已新增使用者 ${name}`,
     profileRenamed: (name: string) => `已重新命名為 ${name}`,
+    profileStyled: (name: string) => `已更新 ${name} 的角色`,
+    profileStyle: "角色樣式",
+    profileSharedLibrary: "書庫共用，進度和收藏獨立保存。",
     library: "首頁",
     reader: "閱讀器",
     jobs: "任務",
@@ -3335,6 +3389,9 @@ const translations = {
     profileSwitched: (name: string) => `Switched to ${name}`,
     profileCreated: (name: string) => `Created profile ${name}`,
     profileRenamed: (name: string) => `Renamed to ${name}`,
+    profileStyled: (name: string) => `Updated ${name}'s avatar`,
+    profileStyle: "Avatar style",
+    profileSharedLibrary: "Libraries are shared; progress and shelves stay separate.",
     library: "Home",
     reader: "Reader",
     jobs: "Jobs",
@@ -3502,6 +3559,9 @@ const translations = {
     profileSwitched: (name: string) => `${name} に切り替えました`,
     profileCreated: (name: string) => `${name} を作成しました`,
     profileRenamed: (name: string) => `${name} に変更しました`,
+    profileStyled: (name: string) => `${name} のアバターを更新しました`,
+    profileStyle: "アバター",
+    profileSharedLibrary: "ライブラリは共有、進捗と棚は個別に保存されます。",
     library: "ホーム",
     reader: "リーダー",
     jobs: "ジョブ",
@@ -3669,6 +3729,9 @@ const translations = {
     profileSwitched: (name: string) => `${name}(으)로 전환됨`,
     profileCreated: (name: string) => `${name} 프로필 생성됨`,
     profileRenamed: (name: string) => `${name}(으)로 이름 변경됨`,
+    profileStyled: (name: string) => `${name} 아바타가 업데이트됨`,
+    profileStyle: "아바타 스타일",
+    profileSharedLibrary: "라이브러리는 공유되고 진행률과 서가는 별도로 저장됩니다.",
     library: "홈",
     reader: "리더",
     jobs: "작업",
@@ -3924,9 +3987,110 @@ function profileDisplayName(profile: Profile, t: Translation) {
   return profile.isDefault ? `${profile.name} · ${t.defaultProfileBadge}` : profile.name;
 }
 
-function profileSelectWidth(name: string) {
-  const length = Array.from(name.trim() || "User").length;
-  return `calc(${Math.max(4, Math.min(length, 18))}ch + 34px)`;
+const profilePresets = [
+  { avatar: "reader", color: "teal", label: "Reader" },
+  { avatar: "comic", color: "amber", label: "Comic" },
+  { avatar: "game", color: "violet", label: "Game" },
+  { avatar: "movie", color: "rose", label: "Movie" },
+  { avatar: "star", color: "blue", label: "Stargazer" },
+  { avatar: "archive", color: "green", label: "Archive" },
+  { avatar: "coffee", color: "slate", label: "Study" },
+  { avatar: "rocket", color: "copper", label: "Explorer" },
+] as const;
+
+function profilePresetForIndex(index: number) {
+  return profilePresets[Math.max(0, index) % profilePresets.length];
+}
+
+function fallbackProfile(name: string): Profile {
+  return {
+    id: 0,
+    name,
+    avatar: "reader",
+    color: "teal",
+    isDefault: true,
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+function ProfileAvatar({ profile }: { profile: Pick<Profile, "name" | "avatar" | "color"> }) {
+  return (
+    <span className={`profileAvatar profileColor-${profile.color || "teal"}`} aria-hidden="true">
+      <svg viewBox="0 0 24 24" focusable="false">
+        {profileAvatarPaths(profile.avatar)}
+      </svg>
+    </span>
+  );
+}
+
+function profileAvatarPaths(avatar: string) {
+  switch (avatar) {
+    case "comic":
+      return (
+        <>
+          <path d="M5 5.5h10.5a3.5 3.5 0 0 1 3.5 3.5v8.5H8.5A3.5 3.5 0 0 1 5 14Z" />
+          <path d="M9 9h6" />
+          <path d="M9 12h4" />
+        </>
+      );
+    case "game":
+      return (
+        <>
+          <path d="M7.5 10h9a4 4 0 0 1 3.9 3.1l.5 2.3a2 2 0 0 1-3.3 1.9l-1.5-1.4H7.9l-1.5 1.4a2 2 0 0 1-3.3-1.9l.5-2.3A4 4 0 0 1 7.5 10Z" />
+          <path d="M8 13v3" />
+          <path d="M6.5 14.5h3" />
+          <path d="M15.5 14h.1" />
+          <path d="M18 14.8h.1" />
+        </>
+      );
+    case "movie":
+      return (
+        <>
+          <path d="M5 6h14v12H5Z" />
+          <path d="M8 6v12" />
+          <path d="M16 6v12" />
+          <path d="M5 10h14" />
+          <path d="M5 14h14" />
+        </>
+      );
+    case "star":
+      return <path d="m12 4 2.2 4.7 5.1.7-3.7 3.6.9 5.1-4.5-2.4-4.5 2.4.9-5.1-3.7-3.6 5.1-.7Z" />;
+    case "archive":
+      return (
+        <>
+          <path d="M5 7h14v12H5Z" />
+          <path d="M7 5h10v2H7Z" />
+          <path d="M9 11h6" />
+        </>
+      );
+    case "coffee":
+      return (
+        <>
+          <path d="M6 9h10v5a4 4 0 0 1-4 4h-2a4 4 0 0 1-4-4Z" />
+          <path d="M16 10h1a2 2 0 0 1 0 4h-1" />
+          <path d="M8 5v2" />
+          <path d="M12 5v2" />
+        </>
+      );
+    case "rocket":
+      return (
+        <>
+          <path d="M12 14 9 11c.9-3.8 3-6 7-7 .3 4-1.2 6.9-4 10Z" />
+          <path d="M9 11 5.5 12.5 8 15" />
+          <path d="M12 14 13 18l2-3.5" />
+          <path d="M6 18l2-2" />
+        </>
+      );
+    default:
+      return (
+        <>
+          <path d="M5 5.5A3.5 3.5 0 0 1 8.5 2H19v16H8.5A3.5 3.5 0 0 0 5 21.5Z" />
+          <path d="M5 5.5v16" />
+          <path d="M9 6h6" />
+        </>
+      );
+  }
 }
 
 function mergeByID<T extends { id: number }>(current: T[], incoming: T[]) {

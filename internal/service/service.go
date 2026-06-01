@@ -305,12 +305,16 @@ func (s *Service) ListProfiles() ([]domain.Profile, error) {
 	return s.store.ListProfiles()
 }
 
-func (s *Service) CreateProfile(name string) (domain.Profile, error) {
-	return s.store.CreateProfile(name)
+func (s *Service) CreateProfile(name string, avatar string, color string) (domain.Profile, error) {
+	return s.store.CreateProfile(name, avatar, color)
 }
 
 func (s *Service) RenameProfile(profileID int64, name string) (domain.Profile, error) {
 	return s.store.RenameProfile(profileID, name)
+}
+
+func (s *Service) UpdateProfile(profileID int64, name string, avatar string, color string) (domain.Profile, error) {
+	return s.store.UpdateProfile(profileID, name, avatar, color)
 }
 
 func (s *Service) DeleteProfile(profileID int64) error {
