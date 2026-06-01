@@ -131,6 +131,8 @@ button:hover {
 }
 
 .setupPanel {
+  max-height: min(760px, calc(100vh - 32px));
+  overflow: auto;
   width: min(640px, calc(100vw - 32px));
 }
 
@@ -153,6 +155,10 @@ button:hover {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px;
+  max-height: min(260px, 32vh);
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .setupRootGrid button {
@@ -912,6 +918,7 @@ h1 {
 
 .directoryPicker {
   display: grid;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   gap: 12px;
   width: min(720px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 32px));
@@ -954,11 +961,13 @@ h1 {
 
 .directoryList {
   display: grid;
+  align-content: start;
   gap: 6px;
-  min-height: 120px;
+  min-height: 0;
   overflow: auto;
   border-top: 1px solid #eef2f3;
   padding-top: 10px;
+  padding-right: 2px;
 }
 
 .directoryList button {
