@@ -2609,15 +2609,7 @@ function BookCover({ book }: { book: Book }) {
   return <ThumbnailImage src={src} thumbnailStatus={book.thumbnailStatus || "pending"} alt="" loading="lazy" />;
 }
 
-const thumbnailFallbackImage = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="320" height="443" viewBox="0 0 320 443">
-  <rect width="320" height="443" fill="#e2eaed"/>
-  <rect x="38" y="42" width="244" height="359" rx="18" fill="#f5f8f9" stroke="#b8c8ce" stroke-width="3"/>
-  <rect x="63" y="78" width="194" height="28" rx="6" fill="#6d8590"/>
-  <rect x="63" y="122" width="146" height="12" rx="6" fill="#c7d4d8"/>
-  <rect x="96" y="178" width="128" height="128" rx="16" fill="#d3dee2"/>
-  <path d="M123 209h78c7 0 13 6 13 13v54c0 7-6 13-13 13h-78c-7 0-13-6-13-13v-54c0-7 6-13 13-13zm6 17v46h72v-46h-72zm9 11h54v8h-54zm0 18h40v8h-40z" fill="#6f858d"/>
-  <rect x="63" y="345" width="194" height="18" rx="9" fill="#8ca1a8"/>
-</svg>`)}`;
+const thumbnailFallbackImage = "/bookshelf-bg-v2.jpg";
 
 function ThumbnailImage({
   src,
