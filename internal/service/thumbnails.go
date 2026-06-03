@@ -462,8 +462,22 @@ func (s *Service) bookThumbnailCacheKey(book domain.Book, size string) (string, 
 		return "", err
 	}
 	source := fmt.Sprintf("%d|%s|%s|%d|%s|%s|%s|%s", book.ID, book.FilePath, book.Format, info.Size(), info.ModTime().UTC().Format(time.RFC3339Nano), normalizeBookThumbnailSize(size), thumbnailAlgorithmVersion, thumbnailCacheKeyProfile)
+	if marker := bookThumbnailSourceCacheMarker(book); marker != "" {
+		source += "|" + marker
+	}
 	sum := sha256.Sum256([]byte(source))
 	return hex.EncodeToString(sum[:])[:20], nil
+}
+
+func bookThumbnailSourceCacheMarker(book domain.Book) string {
+	if book.Format != "epub" || strings.TrimSpace(book.FilePath) == "" {
+		return ""
+	}
+	manifest, err := archive.ReadEPUBManifest(book.FilePath)
+	if err != nil || strings.TrimSpace(manifest.CoverHref) == "" {
+		return ""
+	}
+	return "epub-cover:" + manifest.CoverHref
 }
 
 func (s *Service) bookThumbnailCachePath(bookID int64, size string, cacheKey string) (string, error) {

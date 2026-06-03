@@ -90,6 +90,31 @@ func TestReadEPUBManifestAndResources(t *testing.T) {
 	}
 }
 
+func TestReadEPUBManifestUsesEPUB2GuideCover(t *testing.T) {
+	path := makeEPUB2GuideCover(t)
+
+	manifest, err := ReadEPUBManifest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.CoverHref != "OPS/images/legacy-cover.jpg" {
+		t.Fatalf("cover href = %q, want EPUB 2 guide cover image", manifest.CoverHref)
+	}
+
+	cover, contentType, err := OpenEPUBCover(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cover.Close()
+	data, err := io.ReadAll(cover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "legacy cover" || contentType != "image/jpeg" {
+		t.Fatalf("cover = %q contentType=%q, want jpeg guide cover", string(data), contentType)
+	}
+}
+
 func makeZip(t *testing.T, entries map[string]string) string {
 	t.Helper()
 
@@ -143,6 +168,39 @@ func makeEPUB(t *testing.T) string {
 </package>`,
 		"OPS/text/chapter1.xhtml": `<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter</h1></body></html>`,
 		"OPS/images/cover.jpg":    "cover",
+	})
+}
+
+func makeEPUB2GuideCover(t *testing.T) string {
+	t.Helper()
+	return makeZipAt(t, filepath.Join(t.TempDir(), "legacy-cover.epub"), map[string]string{
+		"META-INF/container.xml": `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`,
+		"OPS/package.opf": `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Legacy Guide Cover EPUB</dc:title>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter1" href="text/chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="cover-image-file" href="images/legacy-cover.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="cover"/>
+    <itemref idref="chapter1"/>
+  </spine>
+  <guide>
+    <reference type="cover" title="Cover Page" href="images/legacy-cover.jpg"/>
+  </guide>
+</package>`,
+		"OPS/cover.xhtml":             `<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="images/legacy-cover.jpg"/></body></html>`,
+		"OPS/text/chapter1.xhtml":     `<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter</h1></body></html>`,
+		"OPS/images/legacy-cover.jpg": "legacy cover",
 	})
 }
 

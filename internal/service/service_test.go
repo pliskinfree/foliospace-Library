@@ -310,6 +310,60 @@ func TestBookThumbnailServesStaleCacheWhileRegenerating(t *testing.T) {
 	}
 }
 
+func TestEPUBThumbnailCacheKeyIncludesResolvedCoverHref(t *testing.T) {
+	root := t.TempDir()
+	bookPath := filepath.Join(root, "Books", "legacy-cover.epub")
+	if err := os.MkdirAll(filepath.Dir(bookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeEPUBWithGuideCover(bookPath); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(bookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Books", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := st.UpsertSeries(lib.ID, "Books", "Books")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := st.UpsertBook(series.ID, "legacy-cover", "epub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertFile(book.ID, lib.ID, bookPath, "Books/legacy-cover.epub", info.Size(), info.ModTime(), ".epub"); err != nil {
+		t.Fatal(err)
+	}
+	bookWithPath, err := st.BookByID(book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewWithConfig(st, t.TempDir())
+	currentKey, err := svc.bookThumbnailCacheKey(bookWithPath, "small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutCoverHrefKey, err := thumbnailV1ProfileCacheKey(bookWithPath, "small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentKey == withoutCoverHrefKey {
+		t.Fatal("EPUB thumbnail cache key did not include resolved cover href")
+	}
+}
+
 func TestBookThumbnailCropsLandscapeCoverToPortraitRatio(t *testing.T) {
 	root := t.TempDir()
 	bookPath := filepath.Join(root, "Series A", "landscape.cbz")
@@ -654,8 +708,73 @@ func legacyThumbnailV1CacheKey(book domain.Book, size string) (string, error) {
 	return hex.EncodeToString(sum[:])[:20], nil
 }
 
+func thumbnailV1ProfileCacheKey(book domain.Book, size string) (string, error) {
+	info, err := os.Stat(book.FilePath)
+	if err != nil {
+		return "", err
+	}
+	source := fmt.Sprintf("%d|%s|%s|%d|%s|%s|%s|%s", book.ID, book.FilePath, book.Format, info.Size(), info.ModTime().UTC().Format(time.RFC3339Nano), normalizeBookThumbnailSize(size), thumbnailAlgorithmVersion, thumbnailCacheKeyProfile)
+	sum := sha256.Sum256([]byte(source))
+	return hex.EncodeToString(sum[:])[:20], nil
+}
+
 func makeImageZip(path string) error {
 	return makeImageZipSized(path, 16, 24)
+}
+
+func makeEPUBWithGuideCover(path string) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	archive := zip.NewWriter(file)
+	entries := map[string]string{
+		"META-INF/container.xml": `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OPS/package.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`,
+		"OPS/package.opf": `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Legacy Guide Cover EPUB</dc:title>
+  </metadata>
+  <manifest>
+    <item id="cover" href="cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="chapter1" href="text/chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="cover-image-file" href="images/legacy-cover.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine>
+    <itemref idref="cover"/>
+    <itemref idref="chapter1"/>
+  </spine>
+  <guide>
+    <reference type="cover" title="Cover Page" href="images/legacy-cover.jpg"/>
+  </guide>
+</package>`,
+		"OPS/cover.xhtml":             `<html xmlns="http://www.w3.org/1999/xhtml"><body><img src="images/legacy-cover.jpg"/></body></html>`,
+		"OPS/text/chapter1.xhtml":     `<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter</h1></body></html>`,
+		"OPS/images/legacy-cover.jpg": "legacy cover",
+	}
+	for name, body := range entries {
+		writer, err := archive.Create(name)
+		if err != nil {
+			_ = archive.Close()
+			_ = file.Close()
+			return err
+		}
+		if _, err := writer.Write([]byte(body)); err != nil {
+			_ = archive.Close()
+			_ = file.Close()
+			return err
+		}
+	}
+	if err := archive.Close(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
 }
 
 func makeImageZipSized(path string, width int, height int) error {
