@@ -897,7 +897,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := s.service.ListSeries()
-	writeJSONOrError(w, items, err)
+	writeJSONOrError(w, clientCollections(items), err)
 }
 
 func (s *Server) handleSeriesAction(w http.ResponseWriter, r *http.Request) {
@@ -1527,11 +1527,16 @@ type clientSearchResponse struct {
 }
 
 type clientCollection struct {
-	ID             int64  `json:"id"`
-	Title          string `json:"title"`
-	CollectionType string `json:"collectionType"`
-	PrimaryType    string `json:"primaryType"`
-	BookCount      int64  `json:"bookCount"`
+	ID              int64  `json:"id"`
+	LibraryID       int64  `json:"libraryId"`
+	Title           string `json:"title"`
+	DirectoryPath   string `json:"directoryPath"`
+	CollectionType  string `json:"collectionType"`
+	PrimaryType     string `json:"primaryType"`
+	BookCount       int64  `json:"bookCount"`
+	CoverBookID     int64  `json:"coverBookId,omitempty"`
+	ThumbnailStatus string `json:"thumbnailStatus,omitempty"`
+	ThumbnailURL    string `json:"thumbnailUrl,omitempty"`
 }
 
 type clientBook struct {
@@ -1679,13 +1684,21 @@ type clientEPUBOpenInfo struct {
 func clientCollections(collections []domain.Series) []clientCollection {
 	out := make([]clientCollection, 0, len(collections))
 	for _, collection := range collections {
-		out = append(out, clientCollection{
+		item := clientCollection{
 			ID:             collection.ID,
+			LibraryID:      collection.LibraryID,
 			Title:          collection.Title,
+			DirectoryPath:  collection.DirectoryPath,
 			CollectionType: collection.CollectionType,
 			PrimaryType:    collection.PrimaryType,
 			BookCount:      collection.BookCount,
-		})
+			CoverBookID:    collection.CoverBookID,
+		}
+		if collection.CoverBookID > 0 {
+			item.ThumbnailStatus = "pending"
+			item.ThumbnailURL = clientThumbnailURL(collection.CoverBookID, "small")
+		}
+		out = append(out, item)
 	}
 	return out
 }

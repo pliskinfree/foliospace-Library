@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"image"
@@ -237,6 +238,114 @@ func TestBookThumbnailQueuesAndWorkerGeneratesCachedImage(t *testing.T) {
 	if currentKey == legacyKey {
 		t.Fatal("current v1 cache key reused legacy uncropped v1 cache key")
 	}
+}
+
+func TestArchiveWebPThumbnailUsesSelectedPortraitCoverAndRefreshesOldCache(t *testing.T) {
+	root := t.TempDir()
+	bookPath := filepath.Join(root, "Series A", "book1.zip")
+	if err := os.MkdirAll(filepath.Dir(bookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	portraitWebP := mustBase64(t, testPortraitWebPBase64)
+	if err := makeZipBytesAt(bookPath, map[string][]byte{
+		"0001_cover0.webp": mustBase64(t, testLandscapeWebPBase64),
+		"0002_cover1.webp": portraitWebP,
+		"0003_01_01.jpg":   makeTestJPEGBytes(t, 400, 1200, color.RGBA{R: 40, G: 60, B: 200, A: 255}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(bookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Comics", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := st.UpsertSeries(lib.ID, "Series A", "Series A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := st.UpsertBook(series.ID, "book1", "zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertFile(book.ID, lib.ID, bookPath, "Series A/book1.zip", info.Size(), info.ModTime(), ".zip"); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewWithConfig(st, t.TempDir())
+	svc.PauseThumbnailWorker()
+	bookWithPath, err := st.BookByID(book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentKey, err := svc.bookThumbnailCacheKey(bookWithPath, "small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldProfileKey, err := thumbnailV1ProfileCacheKey(bookWithPath, "small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentKey == oldProfileKey {
+		t.Fatal("current cache key reused old archive WebP key that may point at a generic thumbnail")
+	}
+	oldCachePath, err := svc.bookThumbnailCachePath(book.ID, "small", oldProfileKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(oldCachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldCachePath, makeTestJPEGBytes(t, 32, 44, color.RGBA{R: 200, G: 40, B: 40, A: 255}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stream, err := svc.OpenBookThumbnail(book.ID, "small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceData, err := io.ReadAll(stream.Body)
+	stream.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.ContentType != "image/webp" || stream.CacheHit || stream.StaleFallback || !stream.SourceFallback || !bytes.Equal(sourceData, portraitWebP) {
+		t.Fatalf("source fallback type=%q cacheHit=%v stale=%v source=%v len=%d, want selected portrait WebP cover instead of old stale cache", stream.ContentType, stream.CacheHit, stream.StaleFallback, stream.SourceFallback, len(sourceData))
+	}
+
+	svc.ResumeThumbnailWorker()
+	if err := svc.ProcessNextThumbnailJobForTest(); err != nil {
+		t.Fatal(err)
+	}
+	cached, err := svc.OpenBookThumbnail(book.ID, "small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cached.Body.Close()
+	cachedData, err := io.ReadAll(cached.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.ContentType != "image/jpeg" || !cached.CacheHit {
+		t.Fatalf("cached stream type=%q cacheHit=%v, want generated jpeg thumbnail", cached.ContentType, cached.CacheHit)
+	}
+	cachedImage, _, err := image.Decode(bytes.NewReader(cachedData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cachedImage.Bounds().Dx() != 320 {
+		t.Fatalf("cached thumbnail width = %d, want downscaled WebP cover", cachedImage.Bounds().Dx())
+	}
+	assertCenterColorNear(t, cachedImage, color.RGBA{R: 0x33, G: 0xaa, B: 0x55, A: 255})
 }
 
 func TestBookThumbnailServesStaleCacheWhileRegenerating(t *testing.T) {
@@ -1023,6 +1132,32 @@ func makeImageZipSized(path string, width int, height int) error {
 	return file.Close()
 }
 
+func makeZipBytesAt(path string, entries map[string][]byte) error {
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	archive := zip.NewWriter(file)
+	for name, body := range entries {
+		writer, err := archive.Create(name)
+		if err != nil {
+			_ = archive.Close()
+			_ = file.Close()
+			return err
+		}
+		if _, err := writer.Write(body); err != nil {
+			_ = archive.Close()
+			_ = file.Close()
+			return err
+		}
+	}
+	if err := archive.Close(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
 func makeTestJPEGBytes(t *testing.T, width int, height int, fill color.RGBA) []byte {
 	t.Helper()
 	var imageBody bytes.Buffer
@@ -1037,6 +1172,26 @@ func makeTestJPEGBytes(t *testing.T, width int, height int, fill color.RGBA) []b
 	}
 	return imageBody.Bytes()
 }
+
+func mustBase64(t *testing.T, value string) []byte {
+	t.Helper()
+	data, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+const testLandscapeWebPBase64 = "UklGRuwAAABXRUJQVlA4IOAAAABQFgCdASqQAdIAPpFIoU0lpCMiICgAsBIJaW7hd2Ee3AAAE9gHvtk5D32ych8B+l2vFych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvrAAAP7/mRv/+IXextv//84l/JH6BeZnLvwJLDAAAAAAAAAAAAAAAA=="
+
+const testPortraitWebPBase64 = "UklGRtgBAABXRUJQVlA4IMwBAACQMgCdASqQATACPpFIoU0lpCMiIAgAsBIJaW7hd2Ee3AAAGGEXJyHv" +
+	"tk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99sn" +
+	"Ie+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D3" +
+	"2ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2T" +
+	"kPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych7" +
+	"7ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJ" +
+	"yHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ9" +
+	"9snIe+2TkPfbJyG8AAD+/WX/+G1Vlbf//xaHWh1oZ87dZEGBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 func installFakePDFToPPM(t *testing.T, renderedJPEG []byte) {
 	t.Helper()

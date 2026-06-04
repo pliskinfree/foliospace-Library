@@ -751,6 +751,12 @@ button:hover {
     transform 140ms ease;
 }
 
+.collectionThumb.withCover {
+  background:
+    linear-gradient(180deg, rgba(246, 250, 251, 0.72), rgba(222, 234, 237, 0.88)),
+    #dfe7ea;
+}
+
 .collectionThumb::before,
 .collectionThumb::after {
   content: "";

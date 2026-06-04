@@ -21,10 +21,11 @@ import (
 
 	"foliospace-reader/internal/archive"
 	"foliospace-reader/internal/domain"
+	_ "golang.org/x/image/webp"
 )
 
 const thumbnailAlgorithmVersion = "v1"
-const thumbnailClientCacheVersion = thumbnailAlgorithmVersion + "-cover-refresh-1"
+const thumbnailClientCacheVersion = thumbnailAlgorithmVersion + "-cover-refresh-2"
 const thumbnailCacheKeyProfile = "portrait-1x-3x4.15"
 const thumbnailJPEGQuality = 90
 const thumbnailTargetAspectRatio = 3.0 / 4.15
@@ -192,7 +193,7 @@ func (s *Service) OpenBookThumbnail(bookID int64, size string) (ThumbnailStream,
 	if s.thumbnailWorker != nil {
 		s.thumbnailWorker.wakeUp()
 	}
-	if book.Format == "pdf" {
+	if preferSourceThumbnailFallback(book) {
 		if cover, err := s.openBookThumbnailSource(book); err == nil {
 			return ThumbnailStream{
 				Body:           cover.Body,
@@ -468,7 +469,18 @@ func (s *Service) openBookThumbnailSource(book domain.Book) (PageStream, error) 
 	if book.Format == "pdf" {
 		return renderPDFCover(book.FilePath, pdfThumbnailRenderDPI)
 	}
-	return s.OpenPage(book.ID, 0)
+	body, contentType, err := archive.OpenCover(book.FilePath)
+	if err != nil {
+		return PageStream{}, err
+	}
+	return PageStream{Body: body, ContentType: contentType}, nil
+}
+
+func preferSourceThumbnailFallback(book domain.Book) bool {
+	if book.Format == "pdf" {
+		return true
+	}
+	return bookThumbnailSourceCacheMarker(book) != ""
 }
 
 func (s *Service) bookThumbnailCacheKey(book domain.Book, size string) (string, error) {
@@ -488,14 +500,32 @@ func bookThumbnailSourceCacheMarker(book domain.Book) string {
 	if book.Format == "pdf" {
 		return pdfThumbnailSourceCacheMarker()
 	}
-	if book.Format != "epub" || strings.TrimSpace(book.FilePath) == "" {
+	if strings.TrimSpace(book.FilePath) == "" {
 		return ""
 	}
-	manifest, err := archive.ReadEPUBManifest(book.FilePath)
-	if err != nil || strings.TrimSpace(manifest.CoverHref) == "" {
+	if book.Format == "epub" {
+		manifest, err := archive.ReadEPUBManifest(book.FilePath)
+		if err != nil || strings.TrimSpace(manifest.CoverHref) == "" {
+			return ""
+		}
+		return "epub-cover:" + manifest.CoverHref
+	}
+	if book.Format != "zip" && book.Format != "cbz" {
 		return ""
 	}
-	return "epub-cover:" + manifest.CoverHref
+	info, err := archive.CoverInfo(book.FilePath)
+	if err != nil || strings.TrimSpace(info.Name) == "" {
+		return ""
+	}
+	ext := strings.ToLower(filepath.Ext(info.Name))
+	if info.Name == info.FirstName && ext != ".webp" {
+		return ""
+	}
+	marker := "archive-cover:" + info.Name
+	if ext == ".webp" {
+		marker += ":webp-decode:v1"
+	}
+	return marker
 }
 
 func (s *Service) bookThumbnailCachePath(bookID int64, size string, cacheKey string) (string, error) {

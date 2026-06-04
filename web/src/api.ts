@@ -34,6 +34,9 @@ export type Series = {
   collectionType: "directory" | "game_platform";
   primaryType: "book" | "comic" | "game" | "video";
   bookCount: number;
+  coverBookId?: number;
+  thumbnailStatus?: string;
+  thumbnailUrl?: string;
 };
 
 export type Book = {

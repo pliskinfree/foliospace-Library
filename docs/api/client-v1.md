@@ -218,8 +218,8 @@ Clients should treat every returned `coverUrl`, `thumbnailUrl`, page URL, EPUB r
 Book cover and thumbnail URLs may include a client cache-busting query value such as:
 
 ```text
-/api/books/42/cover?v=v1-cover-refresh-1
-/api/books/42/thumbnail?size=small&v=v1-cover-refresh-1
+/api/books/42/cover?v=v1-cover-refresh-2
+/api/books/42/thumbnail?size=small&v=v1-cover-refresh-2
 ```
 
 That query value is for browser and client cache invalidation only. It is separate from the thumbnail cache algorithm, which remains `v1`. Older clients and integrations can still use the pre-existing routes:
@@ -403,11 +403,16 @@ Response:
       "title": "Series A",
       "collectionType": "directory",
       "primaryType": "book",
-      "bookCount": 12
+      "bookCount": 12,
+      "coverBookId": 42,
+      "thumbnailStatus": "pending",
+      "thumbnailUrl": "/api/books/42/thumbnail?size=small&v=v1-cover-refresh-2"
     }
   ]
 }
 ```
+
+Collection `coverBookId`, `thumbnailStatus`, and `thumbnailUrl` are additive optional fields. Clients can use them to render collection covers from the first response without calling the collection volumes endpoint first. Older servers may omit them, so clients should keep a local fallback for missing values.
 
 The client DTO intentionally omits local NAS paths such as `filePath`, `rootPath`, and `directoryPath`.
 
@@ -914,7 +919,7 @@ The native home screen can start from `/api/client/home`, but collection browsin
 
 ### `GET /api/collections`
 
-Lists collections.
+Lists collections. Directory collections include `libraryId` and `directoryPath` for legacy web UI flows. When a representative book is available, the response also includes optional `coverBookId`, `thumbnailStatus`, and `thumbnailUrl` fields matching the collection fields returned by `/api/client/home`.
 
 ### `GET /api/collections/{collectionId}/volumes`
 

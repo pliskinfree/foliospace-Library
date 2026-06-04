@@ -199,7 +199,7 @@ func TestThumbnailAPIAndWorkerControls(t *testing.T) {
 	if err := json.Unmarshal([]byte(volumesBody), &volumesPage); err != nil {
 		t.Fatal(err)
 	}
-	if len(volumesPage.Items) != 1 || volumesPage.Items[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-1" || volumesPage.Items[0].ThumbnailStatus == "" {
+	if len(volumesPage.Items) != 1 || volumesPage.Items[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-2" || volumesPage.Items[0].ThumbnailStatus == "" {
 		t.Fatalf("volumes page = %#v, want thumbnail URL with upgraded client cache version", volumesPage)
 	}
 	putJSON(t, ts.URL+"/api/books/"+itoa(book.ID)+"/progress", `{"pageIndex":1,"progressFraction":0.5}`)
@@ -208,7 +208,7 @@ func TestThumbnailAPIAndWorkerControls(t *testing.T) {
 	if err := json.Unmarshal([]byte(continueBody), &continueBooks); err != nil {
 		t.Fatal(err)
 	}
-	if len(continueBooks) != 1 || continueBooks[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-1" || continueBooks[0].ThumbnailStatus == "" {
+	if len(continueBooks) != 1 || continueBooks[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-2" || continueBooks[0].ThumbnailStatus == "" {
 		t.Fatalf("continue reading = %#v, want versioned thumbnail URL", continueBooks)
 	}
 	searchBody := get(t, ts.URL+"/api/search?q=book&limit=1")
@@ -216,7 +216,7 @@ func TestThumbnailAPIAndWorkerControls(t *testing.T) {
 	if err := json.Unmarshal([]byte(searchBody), &searchResult); err != nil {
 		t.Fatal(err)
 	}
-	if len(searchResult.Books) != 1 || searchResult.Books[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-1" || searchResult.Books[0].ThumbnailStatus == "" {
+	if len(searchResult.Books) != 1 || searchResult.Books[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-2" || searchResult.Books[0].ThumbnailStatus == "" {
 		t.Fatalf("search result = %#v, want versioned thumbnail URL", searchResult)
 	}
 
@@ -427,6 +427,66 @@ func TestCollectionVolumesPreservesLegacyBookFieldsWithThumbnails(t *testing.T) 
 	}
 }
 
+func TestCollectionsIncludeRepresentativeThumbnail(t *testing.T) {
+	root := t.TempDir()
+	bookPath := filepath.Join(root, "Series A", "book1.cbz")
+	makeJPEGZip(t, bookPath)
+	info, err := os.Stat(bookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Comics", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := st.UpsertSeries(lib.ID, "Series A", "Series A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := st.UpsertBook(series.ID, "book1", "cbz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertFile(book.ID, lib.ID, bookPath, "Series A/book1.cbz", info.Size(), info.ModTime(), ".cbz"); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(New(service.NewWithConfig(st, t.TempDir()), nil).Routes())
+	defer ts.Close()
+
+	collectionsBody := get(t, ts.URL+"/api/collections")
+	var collections []map[string]any
+	if err := json.Unmarshal([]byte(collectionsBody), &collections); err != nil {
+		t.Fatal(err)
+	}
+	if len(collections) != 1 ||
+		collections[0]["coverBookId"] != float64(book.ID) ||
+		collections[0]["thumbnailUrl"] != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-2" ||
+		collections[0]["thumbnailStatus"] != "pending" {
+		t.Fatalf("collections = %#v, want representative thumbnail fields", collections)
+	}
+
+	homeBody := get(t, ts.URL+"/api/client/home")
+	var home struct {
+		Collections []map[string]any `json:"collections"`
+	}
+	if err := json.Unmarshal([]byte(homeBody), &home); err != nil {
+		t.Fatal(err)
+	}
+	if len(home.Collections) != 1 ||
+		home.Collections[0]["coverBookId"] != float64(book.ID) ||
+		home.Collections[0]["thumbnailUrl"] != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-2" ||
+		home.Collections[0]["thumbnailStatus"] != "pending" {
+		t.Fatalf("client home collections = %#v, want representative thumbnail fields", home.Collections)
+	}
+}
+
 func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	root := t.TempDir()
 	makeZip(t, filepath.Join(root, "Series A", "book1.cbz"), map[string]string{"001.jpg": "image"})
@@ -536,7 +596,7 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	if !strings.Contains(homeBody, `"videoShelf"`) || !strings.Contains(homeBody, `"Demo Movie"`) || strings.Contains(homeBody, "Movies/Demo Movie.mp4") {
 		t.Fatalf("client home response %q is missing safe video shelf", homeBody)
 	}
-	if !strings.Contains(homeBody, `"/api/books/`+itoa(cbzBookID)+`/cover?v=v1-cover-refresh-1"`) {
+	if !strings.Contains(homeBody, `"/api/books/`+itoa(cbzBookID)+`/cover?v=v1-cover-refresh-2"`) {
 		t.Fatalf("client home response %q does not include cover URL", homeBody)
 	}
 

@@ -250,6 +250,7 @@ func (s *Store) UpsertSeries(libraryID int64, title string, directoryPath string
 	}
 	row := s.db.QueryRow(`SELECT s.id, s.library_id, s.title, s.directory_path, s.collection_type,
 			CASE WHEN l.asset_type IN ('book', 'comic', 'game', 'video') THEN l.asset_type ELSE 'comic' END,
+			0,
 			0
 		FROM series s
 		JOIN libraries l ON l.id = s.library_id
@@ -266,7 +267,14 @@ func (s *Store) SeriesByID(id int64) (domain.Series, error) {
 				WHEN SUM(CASE WHEN b.format IN ('epub', 'pdf') THEN 1 ELSE 0 END) > SUM(CASE WHEN b.format IN ('cbz', 'zip', 'cbr', 'rar', '7z') THEN 1 ELSE 0 END) THEN 'book'
 				ELSE 'comic'
 			END,
-			COUNT(DISTINCT b.id)
+			COUNT(DISTINCT b.id),
+			COALESCE((
+				SELECT b2.id
+				FROM books b2
+				WHERE b2.series_id = s.id
+				ORDER BY b2.title, b2.id
+				LIMIT 1
+			), 0)
 		FROM series s
 		JOIN libraries l ON l.id = s.library_id
 		LEFT JOIN books b ON b.series_id = s.id
@@ -288,7 +296,14 @@ func (s *Store) ListSeries() ([]domain.Series, error) {
 				WHEN SUM(CASE WHEN b.format IN ('epub', 'pdf') THEN 1 ELSE 0 END) > SUM(CASE WHEN b.format IN ('cbz', 'zip', 'cbr', 'rar', '7z') THEN 1 ELSE 0 END) THEN 'book'
 				ELSE 'comic'
 			END,
-			COUNT(DISTINCT b.id)
+			COUNT(DISTINCT b.id),
+			COALESCE((
+				SELECT b2.id
+				FROM books b2
+				WHERE b2.series_id = s.id
+				ORDER BY b2.title, b2.id
+				LIMIT 1
+			), 0)
 		FROM series s
 		JOIN libraries l ON l.id = s.library_id
 		LEFT JOIN books b ON b.series_id = s.id
@@ -1925,6 +1940,7 @@ func scanSeries(row scanner) (domain.Series, error) {
 		&series.CollectionType,
 		&series.PrimaryType,
 		&series.BookCount,
+		&series.CoverBookID,
 	); err != nil {
 		return series, err
 	}

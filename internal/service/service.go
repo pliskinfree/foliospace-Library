@@ -1289,7 +1289,11 @@ func (s *Service) OpenCover(bookID int64) (PageStream, error) {
 			ContentType: "image/svg+xml; charset=utf-8",
 		}, nil
 	}
-	return s.OpenPage(bookID, 0)
+	body, contentType, err := archive.OpenCover(book.FilePath)
+	if err != nil {
+		return PageStream{}, err
+	}
+	return PageStream{Body: body, ContentType: contentType}, nil
 }
 
 const (

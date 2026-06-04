@@ -1764,9 +1764,9 @@ export function App() {
                           onMouseDown={(event) => event.preventDefault()}
                           title={item.title}
                         >
-                          <span className={item.collectionType === "game_platform" ? "collectionThumb game" : "collectionThumb"}>
+                          <span className={collectionThumbClass(item)}>
                             {item.collectionType !== "game_platform" && (
-                              <CollectionCover seriesID={item.id} />
+                              <CollectionCover series={item} />
                             )}
                             <span className="collectionInitials">{collectionInitials(item.title)}</span>
                           </span>
@@ -2503,19 +2503,27 @@ export function App() {
   );
 }
 
-function CollectionCover({ seriesID }: { seriesID: number }) {
+function CollectionCover({ series }: { series: Series }) {
   const rootRef = useRef<HTMLSpanElement | null>(null);
-  const [thumbnail, setThumbnail] = useState<{ url: string; status: string } | null>(null);
+  const [thumbnail, setThumbnail] = useState<{ url: string; status: string } | null>(
+    series.thumbnailUrl ? { url: series.thumbnailUrl, status: series.thumbnailStatus || "pending" } : null,
+  );
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
+    setThumbnail(series.thumbnailUrl ? { url: series.thumbnailUrl, status: series.thumbnailStatus || "pending" } : null);
+    setFailed(false);
+  }, [series.thumbnailStatus, series.thumbnailUrl]);
+
+  useEffect(() => {
+    if (series.thumbnailUrl) return;
     const node = rootRef.current;
     if (!node || thumbnail || failed) return;
 
     let cancelled = false;
     const load = async () => {
       try {
-        const page = await api.booksPage(seriesID, { limit: 1, offset: 0, sort: "title" });
+        const page = await api.booksPage(series.id, { limit: 1, offset: 0, sort: "title" });
         if (!cancelled) {
           const book = page.items[0];
           setThumbnail(book ? {
@@ -2550,7 +2558,7 @@ function CollectionCover({ seriesID }: { seriesID: number }) {
       cancelled = true;
       observer.disconnect();
     };
-  }, [failed, seriesID, thumbnail]);
+  }, [failed, series.id, series.thumbnailUrl, thumbnail]);
 
   return (
     <span ref={rootRef} className="collectionCoverSlot" aria-hidden="true">
@@ -3116,6 +3124,11 @@ function gamePlatformLabel(game: GameAsset) {
 function collectionCountLabel(item: Series) {
   if (item.primaryType === "video") return `${item.bookCount} videos`;
   return item.collectionType === "game_platform" ? `${item.bookCount} games` : `${item.bookCount} volumes`;
+}
+
+function collectionThumbClass(item: Series) {
+  if (item.collectionType === "game_platform") return "collectionThumb game";
+  return item.thumbnailUrl ? "collectionThumb withCover" : "collectionThumb";
 }
 
 function collectionKind(item: Series, libraries: Library[]) {

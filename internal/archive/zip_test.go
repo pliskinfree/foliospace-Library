@@ -2,6 +2,10 @@ package archive
 
 import (
 	"archive/zip"
+	"bytes"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,6 +52,51 @@ func TestOpenPageStreamsExpectedBytes(t *testing.T) {
 	}
 	if contentType != "image/jpeg" {
 		t.Fatalf("content type = %q, want image/jpeg", contentType)
+	}
+}
+
+func TestOpenCoverPrefersPortraitCoverAfterLandscapeCoverZero(t *testing.T) {
+	path := makeZipBytes(t, map[string][]byte{
+		"0001_cover0.jpg":    makeJPEG(t, 400, 210, color.RGBA{R: 200, G: 40, B: 40, A: 255}),
+		"0002_cover1.jpg":    makeJPEG(t, 400, 560, color.RGBA{R: 40, G: 170, B: 80, A: 255}),
+		"0003_01_01.jpg":     makeJPEG(t, 400, 4000, color.RGBA{R: 40, G: 60, B: 200, A: 255}),
+		"metadata/notes.txt": []byte("skip"),
+	})
+
+	pages, err := ListPages(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pages[0].Name != "0001_cover0.jpg" {
+		t.Fatalf("first reading page = %q, want original archive order preserved", pages[0].Name)
+	}
+
+	info, err := CoverInfo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.FirstName != "0001_cover0.jpg" || info.Name != "0002_cover1.jpg" {
+		t.Fatalf("cover info = %#v, want portrait cover1 selected while first page is cover0", info)
+	}
+
+	cover, contentType, err := OpenCover(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cover.Close()
+	data, err := io.ReadAll(cover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType != "image/jpeg" {
+		t.Fatalf("content type = %q, want image/jpeg", contentType)
+	}
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Bounds().Dx() != 400 || img.Bounds().Dy() != 560 {
+		t.Fatalf("cover bounds = %v, want selected portrait cover", img.Bounds())
 	}
 }
 
@@ -117,7 +166,15 @@ func TestReadEPUBManifestUsesEPUB2GuideCover(t *testing.T) {
 
 func makeZip(t *testing.T, entries map[string]string) string {
 	t.Helper()
+	byteEntries := make(map[string][]byte, len(entries))
+	for name, body := range entries {
+		byteEntries[name] = []byte(body)
+	}
+	return makeZipBytes(t, byteEntries)
+}
 
+func makeZipBytes(t *testing.T, entries map[string][]byte) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "book.cbz")
 	file, err := os.Create(path)
 	if err != nil {
@@ -129,7 +186,7 @@ func makeZip(t *testing.T, entries map[string]string) string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := entry.Write([]byte(body)); err != nil {
+		if _, err := entry.Write(body); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -140,6 +197,21 @@ func makeZip(t *testing.T, entries map[string]string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func makeJPEG(t *testing.T, width int, height int, fill color.RGBA) []byte {
+	t.Helper()
+	var body bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, fill)
+		}
+	}
+	if err := jpeg.Encode(&body, img, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatal(err)
+	}
+	return body.Bytes()
 }
 
 func makeEPUB(t *testing.T) string {

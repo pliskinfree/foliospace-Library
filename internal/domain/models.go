@@ -56,6 +56,7 @@ type Series struct {
 	CollectionType string `json:"collectionType"`
 	PrimaryType    string `json:"primaryType"`
 	BookCount      int64  `json:"bookCount"`
+	CoverBookID    int64  `json:"coverBookId,omitempty"`
 }
 
 type Book struct {
