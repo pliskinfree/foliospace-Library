@@ -47,3 +47,10 @@ test("docker runtime includes PDF thumbnail renderer dependency", async () => {
 
   assert.ok(dockerfile.includes("poppler-utils"), "runtime image should install poppler-utils so pdftoppm can render PDF covers and thumbnails");
 });
+
+test("webtoon pages hide image join seams without drawing reading dividers", async () => {
+  const styleSource = await readFile(path.join(srcDir, "styles.css"), "utf8");
+
+  assert.match(styleSource, /\.webtoonPage\s*\+\s*\.webtoonPage\s*\{[^}]*margin-top:\s*-1px;/s, "webtoon pages should slightly overlap to hide subpixel seams");
+  assert.doesNotMatch(styleSource, /\.webtoonPage[^{]*\{[^}]*border-(top|bottom):/s, "webtoon pages should not draw visible page divider borders");
+});
