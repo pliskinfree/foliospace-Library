@@ -791,6 +791,7 @@ func (s *Server) clientBookManifest(bookID int64, profileID int64) (clientBookMa
 		out.Pages = append(out.Pages, clientPageRef{
 			Index:      page.Index,
 			Name:       page.Name,
+			PageKey:    page.PageKey,
 			URL:        pageURL,
 			DisplayURL: pageURL + "?maxWidth=1200",
 		})
@@ -1130,6 +1131,25 @@ func (s *Server) handleBookAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.streamPage(w, r, id, pageIndex)
+		return
+	}
+	if tail == "reading-position" && r.Method == http.MethodGet {
+		positions, err := s.service.ReadingPositionsForProfile(id, s.requestProfileID(r))
+		writeJSONOrError(w, clientReadingPositions{BookID: id, Positions: positions}, err)
+		return
+	}
+	if tail == "reading-position/webtoon" && r.Method == http.MethodPut {
+		var req domain.ReadingPosition
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		position, err := s.service.SaveWebtoonReadingPositionForProfile(id, s.requestProfileID(r), req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, position)
 		return
 	}
 	if tail == "progress" && r.Method == http.MethodPut {
@@ -1718,9 +1738,15 @@ type clientProgress struct {
 	ProgressFraction float64 `json:"progressFraction"`
 }
 
+type clientReadingPositions struct {
+	BookID    int64                             `json:"bookId"`
+	Positions map[string]domain.ReadingPosition `json:"positions"`
+}
+
 type clientPageRef struct {
 	Index      int    `json:"index"`
 	Name       string `json:"name"`
+	PageKey    string `json:"pageKey,omitempty"`
 	URL        string `json:"url"`
 	DisplayURL string `json:"displayUrl,omitempty"`
 }

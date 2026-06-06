@@ -1602,9 +1602,18 @@ func (s *Store) ListPages(bookID int64) ([]domain.Page, error) {
 		if err := rows.Scan(&page.Index, &page.Name); err != nil {
 			return nil, err
 		}
+		page.PageKey = stablePageKey(page.Index, page.Name)
 		out = append(out, page)
 	}
 	return out, rows.Err()
+}
+
+func stablePageKey(index int, name string) string {
+	name = strings.TrimSpace(name)
+	if name != "" {
+		return "archive:" + name
+	}
+	return fmt.Sprintf("index:%d", index)
 }
 
 func (s *Store) StartScanJob(libraryID int64) (domain.ScanJob, error) {
@@ -1970,6 +1979,88 @@ func (s *Store) SaveProgressDetailForProfile(bookID int64, profileID int64, page
 			bookID, pageIndex, locator, progressFraction)
 	}
 	return err
+}
+
+func (s *Store) SaveReadingPositionForProfile(bookID int64, profileID int64, readerMode string, position domain.ReadingPosition) (domain.ReadingPosition, error) {
+	profileID, err := s.ResolveProfileID(profileID)
+	if err != nil {
+		return domain.ReadingPosition{}, err
+	}
+	readerMode = strings.TrimSpace(readerMode)
+	position.BookID = bookID
+	position.ReaderMode = readerMode
+	position.Schema = strings.TrimSpace(position.Schema)
+	position.PageKey = strings.TrimSpace(position.PageKey)
+	position.ContentSignature = strings.TrimSpace(position.ContentSignature)
+	position.PayloadJSON = strings.TrimSpace(position.PayloadJSON)
+	if position.ViewportAnchorRatio == 0 {
+		position.ViewportAnchorRatio = 0.28
+	}
+	_, err = s.db.Exec(`INSERT INTO profile_read_positions(
+			profile_id, book_id, reader_mode, schema, page_index, page_key, page_y_offset_ratio,
+			viewport_anchor_ratio, document_progress, page_count, content_signature, payload_json
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(profile_id, book_id, reader_mode) DO UPDATE SET
+			schema = excluded.schema,
+			page_index = excluded.page_index,
+			page_key = excluded.page_key,
+			page_y_offset_ratio = excluded.page_y_offset_ratio,
+			viewport_anchor_ratio = excluded.viewport_anchor_ratio,
+			document_progress = excluded.document_progress,
+			page_count = excluded.page_count,
+			content_signature = excluded.content_signature,
+			payload_json = excluded.payload_json,
+			updated_at = CURRENT_TIMESTAMP`,
+		profileID, bookID, readerMode, position.Schema, position.PageIndex, position.PageKey, position.PageYOffsetRatio,
+		position.ViewportAnchorRatio, position.DocumentProgress, position.PageCount, position.ContentSignature, position.PayloadJSON)
+	if err != nil {
+		return domain.ReadingPosition{}, err
+	}
+	if readerMode == "webtoon" {
+		if err := s.SaveProgressDetailForProfile(bookID, profileID, position.PageIndex, "", position.DocumentProgress); err != nil {
+			return domain.ReadingPosition{}, err
+		}
+	}
+	return s.ReadingPositionForProfile(bookID, profileID, readerMode)
+}
+
+func (s *Store) ReadingPositionsForProfile(bookID int64, profileID int64) (map[string]domain.ReadingPosition, error) {
+	profileID, err := s.ResolveProfileID(profileID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT book_id, reader_mode, schema, page_index, page_key, page_y_offset_ratio,
+			viewport_anchor_ratio, document_progress, page_count, content_signature, payload_json, updated_at
+		FROM profile_read_positions WHERE book_id = ? AND profile_id = ?`, bookID, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]domain.ReadingPosition)
+	for rows.Next() {
+		var position domain.ReadingPosition
+		var updated string
+		if err := rows.Scan(&position.BookID, &position.ReaderMode, &position.Schema, &position.PageIndex, &position.PageKey,
+			&position.PageYOffsetRatio, &position.ViewportAnchorRatio, &position.DocumentProgress, &position.PageCount,
+			&position.ContentSignature, &position.PayloadJSON, &updated); err != nil {
+			return nil, err
+		}
+		position.UpdatedAt = parseTime(updated)
+		out[position.ReaderMode] = position
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) ReadingPositionForProfile(bookID int64, profileID int64, readerMode string) (domain.ReadingPosition, error) {
+	positions, err := s.ReadingPositionsForProfile(bookID, profileID)
+	if err != nil {
+		return domain.ReadingPosition{}, err
+	}
+	position, ok := positions[strings.TrimSpace(readerMode)]
+	if !ok {
+		return domain.ReadingPosition{}, sql.ErrNoRows
+	}
+	return position, nil
 }
 
 func (s *Store) Progress(bookID int64) (domain.ReadProgress, error) {

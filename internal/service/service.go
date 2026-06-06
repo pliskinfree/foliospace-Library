@@ -1288,7 +1288,7 @@ func (s *Service) AnalyzeBook(id int64) ([]domain.Page, error) {
 	if err := s.store.ReplacePages(id, pages); err != nil {
 		return nil, err
 	}
-	return pages, nil
+	return s.store.ListPages(id)
 }
 
 func (s *Service) Pages(bookID int64) ([]domain.Page, error) {
@@ -1560,12 +1560,50 @@ func (s *Service) SaveProgressDetailForProfile(bookID int64, profileID int64, pa
 	return s.store.SaveProgressDetailForProfile(bookID, profileID, pageIndex, locator, progressFraction)
 }
 
+func (s *Service) SaveWebtoonReadingPositionForProfile(bookID int64, profileID int64, position domain.ReadingPosition) (domain.ReadingPosition, error) {
+	position.Schema = strings.TrimSpace(position.Schema)
+	if position.Schema == "" {
+		position.Schema = domain.WebtoonPositionSchema
+	}
+	if position.Schema != domain.WebtoonPositionSchema {
+		return domain.ReadingPosition{}, fmt.Errorf("unsupported reading position schema %q", position.Schema)
+	}
+	if position.PageIndex < 0 {
+		position.PageIndex = 0
+	}
+	position.PageKey = strings.TrimSpace(position.PageKey)
+	position.PageYOffsetRatio = clampUnit(position.PageYOffsetRatio)
+	position.DocumentProgress = clampUnit(position.DocumentProgress)
+	if position.ViewportAnchorRatio <= 0 {
+		position.ViewportAnchorRatio = 0.28
+	}
+	position.ViewportAnchorRatio = clampUnit(position.ViewportAnchorRatio)
+	if position.PageCount < 0 {
+		position.PageCount = 0
+	}
+	return s.store.SaveReadingPositionForProfile(bookID, profileID, "webtoon", position)
+}
+
+func (s *Service) ReadingPositionsForProfile(bookID int64, profileID int64) (map[string]domain.ReadingPosition, error) {
+	return s.store.ReadingPositionsForProfile(bookID, profileID)
+}
+
 func (s *Service) Progress(bookID int64) (domain.ReadProgress, error) {
 	return s.store.Progress(bookID)
 }
 
 func (s *Service) ProgressForProfile(bookID int64, profileID int64) (domain.ReadProgress, error) {
 	return s.store.ProgressForProfile(bookID, profileID)
+}
+
+func clampUnit(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
 }
 
 func (s *Service) ListJobs() ([]domain.ScanJob, error) {

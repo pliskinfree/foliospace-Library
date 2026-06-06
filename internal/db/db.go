@@ -210,6 +210,22 @@ func Migrate(conn *sql.DB) error {
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY(profile_id, book_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS profile_read_positions (
+			profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+			book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+			reader_mode TEXT NOT NULL,
+			schema TEXT NOT NULL,
+			page_index INTEGER NOT NULL DEFAULT 0,
+			page_key TEXT NOT NULL DEFAULT '',
+			page_y_offset_ratio REAL NOT NULL DEFAULT 0,
+			viewport_anchor_ratio REAL NOT NULL DEFAULT 0.28,
+			document_progress REAL NOT NULL DEFAULT 0,
+			page_count INTEGER NOT NULL DEFAULT 0,
+			content_signature TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY(profile_id, book_id, reader_mode)
+		)`,
 		`CREATE TABLE IF NOT EXISTS book_private_states (
 			profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
 			book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,

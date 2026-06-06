@@ -249,6 +249,7 @@ export type VideoListOptions = BookListOptions & {
 export type Page = {
   index: number;
   name: string;
+  pageKey?: string;
   url?: string;
   displayUrl?: string;
 };
@@ -280,6 +281,25 @@ export type ReadProgress = {
   pageIndex: number;
   locator: string;
   progressFraction: number;
+};
+
+export type WebtoonReadingPosition = {
+  schema: "webtoon-position-v1";
+  pageIndex: number;
+  pageKey: string;
+  pageYOffsetRatio: number;
+  viewportAnchorRatio: number;
+  documentProgress: number;
+  pageCount: number;
+  contentSignature?: string;
+  updatedAt?: string;
+};
+
+export type ReadingPositions = {
+  bookId: number;
+  positions: {
+    webtoon?: WebtoonReadingPosition;
+  };
 };
 
 export type ScanJob = {
@@ -537,6 +557,12 @@ export const api = {
   errors: () => request<FileError[]>("/api/errors"),
   jobErrors: (jobId: number) => request<FileError[]>(`/api/errors?jobId=${jobId}`),
   readProgress: (bookId: number) => request<ReadProgress>(`/api/books/${bookId}/progress`),
+  readingPositions: (bookId: number) => request<ReadingPositions>(`/api/books/${bookId}/reading-position`),
+  saveWebtoonReadingPosition: (bookId: number, position: WebtoonReadingPosition) =>
+    request<WebtoonReadingPosition>(`/api/books/${bookId}/reading-position/webtoon`, {
+      method: "PUT",
+      body: JSON.stringify(position),
+    }),
   progress: (bookId: number, pageIndex: number) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/progress`, {
       method: "PUT",
