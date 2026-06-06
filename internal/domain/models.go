@@ -222,8 +222,9 @@ type File struct {
 }
 
 type Page struct {
-	Index int    `json:"index"`
-	Name  string `json:"name"`
+	Index   int    `json:"index"`
+	Name    string `json:"name"`
+	PageKey string `json:"pageKey,omitempty"`
 }
 
 type EPUBManifest struct {
@@ -350,6 +351,23 @@ type ReadProgress struct {
 	Locator          string    `json:"locator"`
 	ProgressFraction float64   `json:"progressFraction"`
 	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+const WebtoonPositionSchema = "webtoon-position-v1"
+
+type ReadingPosition struct {
+	BookID              int64     `json:"bookId,omitempty"`
+	ReaderMode          string    `json:"readerMode,omitempty"`
+	Schema              string    `json:"schema"`
+	PageIndex           int       `json:"pageIndex"`
+	PageKey             string    `json:"pageKey"`
+	PageYOffsetRatio    float64   `json:"pageYOffsetRatio"`
+	ViewportAnchorRatio float64   `json:"viewportAnchorRatio"`
+	DocumentProgress    float64   `json:"documentProgress"`
+	PageCount           int       `json:"pageCount"`
+	ContentSignature    string    `json:"contentSignature,omitempty"`
+	PayloadJSON         string    `json:"payloadJson,omitempty"`
+	UpdatedAt           time.Time `json:"updatedAt,omitempty"`
 }
 
 type FileError struct {

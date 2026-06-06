@@ -96,6 +96,80 @@ func TestStorePersistsLibraryBookProgressAndErrors(t *testing.T) {
 	}
 }
 
+func TestStorePersistsWebtoonReadingPositionPerProfile(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	s := New(conn)
+	guestProfile, err := s.CreateProfile("Guest", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, err := s.CreateLibrary("Comics", "/library")
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := s.UpsertSeries(lib.ID, "Series A", "Series A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := s.UpsertBook(series.ID, "Book 1", "cbz")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defaultPosition := domain.ReadingPosition{
+		Schema:              domain.WebtoonPositionSchema,
+		PageIndex:           12,
+		PageKey:             "archive:0012.webp",
+		PageYOffsetRatio:    0.25,
+		ViewportAnchorRatio: 0.28,
+		DocumentProgress:    0.33,
+		PageCount:           80,
+	}
+	guestPosition := domain.ReadingPosition{
+		Schema:              domain.WebtoonPositionSchema,
+		PageIndex:           40,
+		PageKey:             "archive:0040.webp",
+		PageYOffsetRatio:    0.75,
+		ViewportAnchorRatio: 0.28,
+		DocumentProgress:    0.66,
+		PageCount:           80,
+	}
+	if _, err := s.SaveReadingPositionForProfile(book.ID, defaultProfileID, "webtoon", defaultPosition); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveReadingPositionForProfile(book.ID, guestProfile.ID, "webtoon", guestPosition); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultPositions, err := s.ReadingPositionsForProfile(book.ID, defaultProfileID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestPositions, err := s.ReadingPositionsForProfile(book.ID, guestProfile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultPositions["webtoon"].PageKey != "archive:0012.webp" || defaultPositions["webtoon"].PageYOffsetRatio != 0.25 {
+		t.Fatalf("default positions = %#v, want default webtoon anchor", defaultPositions)
+	}
+	if guestPositions["webtoon"].PageKey != "archive:0040.webp" || guestPositions["webtoon"].PageYOffsetRatio != 0.75 {
+		t.Fatalf("guest positions = %#v, want guest webtoon anchor", guestPositions)
+	}
+
+	progress, err := s.ProgressForProfile(book.ID, guestProfile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress.PageIndex != 40 || progress.ProgressFraction != 0.66 || progress.Locator != "webtoon:0.66" {
+		t.Fatalf("legacy progress = %#v, want page/document progress sync with webtoon locator fallback", progress)
+	}
+}
+
 func TestStorePersistsClientPreferences(t *testing.T) {
 	conn, err := db.Open(t.TempDir())
 	if err != nil {

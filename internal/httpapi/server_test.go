@@ -215,6 +215,73 @@ func TestAPIStreamsDownsampledComicPage(t *testing.T) {
 	}
 }
 
+func TestAPIReadingPositionWebtoonV1(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Comics", "/library")
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := st.UpsertSeries(lib.ID, "Series A", "Series A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := st.UpsertBook(series.ID, "Book 1", "cbz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReplacePages(book.ID, []domain.Page{
+		{Index: 0, Name: "0000.webp"},
+		{Index: 1, Name: "nested/0001.webp"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewServer(New(service.New(st), nil).Routes())
+	defer ts.Close()
+
+	body := putJSONBody(t, ts.URL+"/api/books/"+itoa(book.ID)+"/reading-position/webtoon", `{
+		"schema":"webtoon-position-v1",
+		"pageIndex":1,
+		"pageKey":"archive:nested/0001.webp",
+		"pageYOffsetRatio":1.5,
+		"viewportAnchorRatio":0.28,
+		"documentProgress":-0.2,
+		"pageCount":2,
+		"contentSignature":"sig-a"
+	}`)
+	if !strings.Contains(body, `"schema":"webtoon-position-v1"`) ||
+		!strings.Contains(body, `"pageKey":"archive:nested/0001.webp"`) ||
+		!strings.Contains(body, `"pageYOffsetRatio":1`) ||
+		!strings.Contains(body, `"documentProgress":0`) {
+		t.Fatalf("save reading-position body = %q, want normalized webtoon position", body)
+	}
+
+	positionsBody := get(t, ts.URL+"/api/books/"+itoa(book.ID)+"/reading-position")
+	if !strings.Contains(positionsBody, `"positions"`) ||
+		!strings.Contains(positionsBody, `"webtoon"`) ||
+		!strings.Contains(positionsBody, `"pageKey":"archive:nested/0001.webp"`) ||
+		!strings.Contains(positionsBody, `"viewportAnchorRatio":0.28`) {
+		t.Fatalf("reading-position body = %q, want stored webtoon position", positionsBody)
+	}
+
+	progressBody := get(t, ts.URL+"/api/books/"+itoa(book.ID)+"/progress")
+	if !strings.Contains(progressBody, `"pageIndex":1`) ||
+		!strings.Contains(progressBody, `"locator":"webtoon:0"`) ||
+		!strings.Contains(progressBody, `"progressFraction":0`) {
+		t.Fatalf("legacy progress body = %q, want synced legacy progress with webtoon locator fallback", progressBody)
+	}
+
+	manifestBody := get(t, ts.URL+"/api/client/books/"+itoa(book.ID)+"/manifest")
+	if !strings.Contains(manifestBody, `"pageKey":"archive:nested/0001.webp"`) {
+		t.Fatalf("manifest body = %q, want stable pageKey in page refs", manifestBody)
+	}
+}
+
 func TestThumbnailAPIAndWorkerControls(t *testing.T) {
 	root := t.TempDir()
 	bookPath := filepath.Join(root, "Series A", "book1.cbz")
