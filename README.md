@@ -2,7 +2,7 @@
 
 [Website](https://foliospace.app/) · [Docker Hub](https://hub.docker.com/r/funland/foliospace-library) · [Client API](docs/api/client-v1.md) · [MCP](docs/mcp/usage.md)
 
-![FolioSpace Library hero](docs/screenshots/hero.png)
+![FolioSpace Library hero](https://raw.githubusercontent.com/funland/foliospace-Library/main/docs/screenshots/hero.png)
 
 FolioSpace Library is a personal digital asset library that runs on a NAS, Docker host, or local server. It provides a unified indexing layer and stable client service layer for Apple-device experiences across reading, games, spatial media, documents, photos, videos, and related audio collections.
 
@@ -10,17 +10,17 @@ It is not trying to become a complete Plex, Jellyfin, or Immich replacement. The
 
 The current implementation still starts from the FolioSpace Reader codebase and keeps the existing reading MVP operational while the model evolves toward `Asset` / `LibraryItem`.
 
-Current release branch: `0.93`.
+Current release branch: `0.931`.
 
 ## Screenshots
 
-![Unified home](docs/screenshots/home.png)
+![Unified home](https://raw.githubusercontent.com/funland/foliospace-Library/main/docs/screenshots/home.png)
 
-![Reader mode](docs/screenshots/reader.png)
+![Reader mode](https://raw.githubusercontent.com/funland/foliospace-Library/main/docs/screenshots/reader.png)
 
-![NAS and API](docs/screenshots/nas-api.png)
+![NAS and API](https://raw.githubusercontent.com/funland/foliospace-Library/main/docs/screenshots/nas-api.png)
 
-![Game and video libraries](docs/screenshots/game-video.png)
+![Game and video libraries](https://raw.githubusercontent.com/funland/foliospace-Library/main/docs/screenshots/game-video.png)
 
 ## License
 
@@ -65,7 +65,7 @@ FOLIOSPACE_API_TOKEN=
 FOLIOSPACE_SCAN_WORKERS=2
 ```
 
-Set `FOLIOSPACE_API_TOKEN` to require API authentication from environment variables. If it is empty, release `0.93` can create the first access token from the web setup page and stores only a SHA-256 token hash in SQLite. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
+Set `FOLIOSPACE_API_TOKEN` to require API authentication from environment variables. If it is empty, release `0.931` can create the first access token from the web setup page and stores only a SHA-256 token hash in SQLite. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
 
 Authentication helpers:
 
@@ -119,6 +119,15 @@ Release `0.93` adds anchored webtoon reading positions for long-strip comics and
 - Legacy `/progress` remains compatible through `locator: "webtoon:<fraction>"`, so older clients and MCP progress tools keep working.
 - Webtoon image joins are hidden more cleanly to reduce visible seams between adjacent long-strip pages.
 
+## Release 0.931 Hotfix
+
+Release `0.931` is a PDF webtoon stability hotfix:
+
+- PDF webtoon mode no longer renders every PDF page into canvas at once.
+- Only the current PDF page and its near neighbors are rendered; distant pages use lightweight placeholders.
+- PDF webtoon canvas DPR is capped to reduce memory pressure on Safari, iPadOS, and other mobile browsers.
+- The release also includes the latest fullscreen comic reader display fixes merged from GitHub.
+
 ## MCP
 
 Agent integration docs are in [`docs/mcp/usage.md`](docs/mcp/usage.md). The MCP server wraps the stable Client API for diagnostics, library lookup, manifests, favorites/private-status shelves, preferences, private reader state, progress, scan jobs, scan worker settings, job control, and collection access. Heavy media streams still use the HTTP URLs returned by the API.
@@ -132,7 +141,7 @@ curl -fsSL https://foliospace.app/install-mcp.sh | sh
 Release maintainers can build macOS/Linux MCP packages with:
 
 ```bash
-VERSION=0.93 ./scripts/build-mcp-release.sh
+VERSION=0.931 ./scripts/build-mcp-release.sh
 ```
 
 ## Product Direction
@@ -152,10 +161,10 @@ ROM support is for indexing and launching user-owned local content. FolioSpace L
 
 ## Docker
 
-Release `0.93` image tag:
+Release `0.931` image tag:
 
 ```bash
-docker pull funland/foliospace-library:0.93
+docker pull funland/foliospace-library:0.931
 ```
 
 For local verification:
@@ -174,7 +183,7 @@ docker run -p 8080:8080 \
   -v /volume2/Books:/books:ro \
   -v /volume2/GameROMS:/games:ro \
   -e FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games \
-  funland/foliospace-library:0.93
+  funland/foliospace-library:0.931
 ```
 
 Open `http://localhost:8080`. On a fresh `/config`, the setup page asks for an access key and lets you choose a container path such as `/library`, `/books`, or `/games`. If a directory is missing from the setup page, add a Docker volume mapping first; FolioSpace Library can only browse paths visible inside the container.
@@ -189,11 +198,11 @@ Docker Hub releases are built by GitHub Actions from Git tags. Configure these r
 Then create and push a version tag:
 
 ```bash
-git tag v0.93
-git push origin v0.93
+git tag v0.931
+git push github v0.931
 ```
 
-The workflow builds `linux/amd64` and `linux/arm64` images, then pushes `funland/foliospace-library:0.93` and `funland/foliospace-library:latest`.
+The workflow builds `linux/amd64` and `linux/arm64` images, then pushes `funland/foliospace-library:0.931` and `funland/foliospace-library:latest`.
 
 ## Current MVP Support
 
