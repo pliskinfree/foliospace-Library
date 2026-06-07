@@ -247,7 +247,7 @@ Response:
 ```json
 {
   "serviceName": "FolioSpace Library",
-  "serviceVersion": "0.91",
+  "serviceVersion": "0.931",
   "apiVersion": "v1",
   "supportedFormats": ["cbz", "zip", "epub", "pdf", "mp4", "m4v", "mov", "mkv", "avi", "webm", "nes", "sfc", "smc", "gba", "gb", "gbc", "nds", "3ds", "cia", "chd", "iso", "bin", "cue", "7z"],
   "capabilities": {
@@ -259,8 +259,10 @@ Response:
     "pdfPageLayout": true,
     "pdfWebtoonLayout": true,
     "comicWebtoonLayout": true,
+    "webtoonPositionSync": true,
     "compactReader": true,
     "pageStreaming": true,
+    "pageImageDownsample": true,
     "gameShelf": true,
     "gameCatalog": true,
     "videoCatalog": true,
@@ -278,7 +280,7 @@ Response:
 }
 ```
 
-PDF clients should read the manifest through `GET /api/client/books/{bookId}/manifest`, then fetch the PDF through the opaque page URL at `GET /api/books/{bookId}/pages/0`. The server supports HTTP Range requests for that URL, so native clients can stream PDF data without exposing the NAS path. `pdfPageLayout` means clients may offer single-page and two-page spread modes on top of the same PDF stream. `pdfWebtoonLayout` and `comicWebtoonLayout` mean clients may also offer vertical continuous scrolling when a manifest includes `webtoon` in `readerModes`. `compactReader` means the bundled web UI has a phone-oriented compact reader, but native clients can still implement their own layout.
+PDF clients should read the manifest through `GET /api/client/books/{bookId}/manifest`, then fetch the PDF through the opaque page URL at `GET /api/books/{bookId}/pages/0`. The server supports HTTP Range requests for that URL, so native clients can stream PDF data without exposing the NAS path. `pdfPageLayout` means clients may offer single-page and two-page spread modes on top of the same PDF stream. `pdfWebtoonLayout` and `comicWebtoonLayout` mean clients may also offer vertical continuous scrolling when a manifest includes `webtoon` in `readerModes`. `webtoonPositionSync` means the structured `reading-position/webtoon` endpoints are available. `pageImageDownsample` means archive image pages can be requested with `maxWidth` and client manifests include `displayUrl` for memory-safe mobile/tablet rendering. `compactReader` means the bundled web UI has a phone-oriented compact reader, but native clients can still implement their own layout.
 
 ### `GET /api/client/preferences`
 

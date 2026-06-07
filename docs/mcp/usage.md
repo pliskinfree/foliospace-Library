@@ -21,10 +21,10 @@ This installs `foliospace-mcp` to:
 Release packages are expected at:
 
 ```text
-https://foliospace.app/releases/foliospace-mcp_0.91_darwin_arm64.tar.gz
-https://foliospace.app/releases/foliospace-mcp_0.91_darwin_amd64.tar.gz
-https://foliospace.app/releases/foliospace-mcp_0.91_linux_arm64.tar.gz
-https://foliospace.app/releases/foliospace-mcp_0.91_linux_amd64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.931_darwin_arm64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.931_darwin_amd64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.931_linux_arm64.tar.gz
+https://foliospace.app/releases/foliospace-mcp_0.931_linux_amd64.tar.gz
 https://foliospace.app/releases/checksums.txt
 ```
 
@@ -116,7 +116,7 @@ Check whether FolioSpace is currently transcoding a video and which item is occu
 
 ## Tools
 
-- `foliospace.client_info`: service name, version, supported formats, and capability flags.
+- `foliospace.client_info`: service name, version, supported formats, and capability flags such as `webtoonPositionSync` and `pageImageDownsample`.
 - `foliospace.home`: continue reading, recent books, and collections.
 - `foliospace.search_books`: search indexed books and comics.
 - `foliospace.open_book_manifest`: open a CBZ/ZIP/EPUB/PDF client manifest by `bookId`. Manifests include `readerModes` and `defaultReaderMode` so clients can expose single-page, double-page, or webtoon/vertical-scroll controls without guessing from the extension. CBZ/ZIP page entries include `pageKey`, `url` for the original image, and `displayUrl` for a server-downsampled mobile/tablet-safe image. PDF manifests expose the opaque PDF stream URL; clients should use HTTP Range capable reads against that URL.

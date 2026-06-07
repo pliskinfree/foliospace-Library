@@ -708,6 +708,8 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 		!strings.Contains(infoBody, `"pdfPageLayout":true`) ||
 		!strings.Contains(infoBody, `"pdfWebtoonLayout":true`) ||
 		!strings.Contains(infoBody, `"comicWebtoonLayout":true`) ||
+		!strings.Contains(infoBody, `"webtoonPositionSync":true`) ||
+		!strings.Contains(infoBody, `"pageImageDownsample":true`) ||
 		!strings.Contains(infoBody, `"compactReader":true`) ||
 		!strings.Contains(infoBody, `"scanSettings":true`) {
 		t.Fatalf("client info response %q does not include v1 capabilities", infoBody)
