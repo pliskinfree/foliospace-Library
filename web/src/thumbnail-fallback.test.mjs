@@ -169,7 +169,7 @@ test("PDF webtoon mode does not render every page at once", async () => {
 test("PDF webtoon rendering caps canvas memory and releases offscreen canvases", async () => {
   const appSource = await readFile(path.join(srcDir, "App.tsx"), "utf8");
 
-  assert.ok(appSource.includes("const PDF_WEBTOON_RENDER_RADIUS = 0;"), "PDF webtoon should render only the current page on memory-constrained browsers");
+  assert.ok(appSource.includes("const PDF_WEBTOON_RENDER_RADIUS = 2;"), "PDF webtoon should render the current page plus two neighbors on each side");
   assert.ok(appSource.includes("const PDF_WEBTOON_MAX_CANVAS_PIXELS = 6_000_000;"), "PDF webtoon canvases should have a hard pixel budget");
   assert.match(
     appSource,
