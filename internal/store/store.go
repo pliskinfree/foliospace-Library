@@ -1531,10 +1531,35 @@ type FileIndex struct {
 
 func (s *Store) FileIndexByPath(absPath string) (FileIndex, error) {
 	row := s.db.QueryRow(`SELECT f.id, f.book_id, f.library_id, f.abs_path, f.rel_path, f.size, f.mtime, f.ext,
-			b.id, b.series_id, s.title, b.title, b.creator, b.description, b.format, b.analyzed, b.page_count
-		FROM files f JOIN books b ON b.id = f.book_id
-		JOIN series s ON s.id = b.series_id
-		WHERE f.abs_path = ?`, absPath)
+				b.id, b.series_id, s.title, b.title, b.creator, b.description, b.format, b.analyzed, b.page_count
+			FROM files f JOIN books b ON b.id = f.book_id
+			JOIN series s ON s.id = b.series_id
+			WHERE f.abs_path = ?`, absPath)
+	return scanFileIndex(row)
+}
+
+func (s *Store) ListFileIndexesByLibrary(libraryID int64) (map[string]FileIndex, error) {
+	rows, err := s.db.Query(`SELECT f.id, f.book_id, f.library_id, f.abs_path, f.rel_path, f.size, f.mtime, f.ext,
+				b.id, b.series_id, s.title, b.title, b.creator, b.description, b.format, b.analyzed, b.page_count
+			FROM files f JOIN books b ON b.id = f.book_id
+			JOIN series s ON s.id = b.series_id
+			WHERE f.library_id = ?`, libraryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	indexes := map[string]FileIndex{}
+	for rows.Next() {
+		item, err := scanFileIndex(rows)
+		if err != nil {
+			return nil, err
+		}
+		indexes[item.File.AbsPath] = item
+	}
+	return indexes, rows.Err()
+}
+
+func scanFileIndex(row scanner) (FileIndex, error) {
 	var item FileIndex
 	var mtime string
 	var analyzed int

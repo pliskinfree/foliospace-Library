@@ -130,6 +130,7 @@ func (s *Scanner) runScanJob(library domain.Library, job domain.ScanJob, scope s
 	}
 
 	dirStates := map[string]*scanDirState{}
+	fileIndexes, _ := s.store.ListFileIndexesByLibrary(library.ID)
 	walkErr := s.walkScanScope(library, scope, dirStates, func(path string, entry fs.DirEntry, walkErr error) error {
 		if err := s.applyScanControl(&job); err != nil {
 			return err
@@ -217,22 +218,15 @@ func (s *Scanner) runScanJob(library domain.Library, job domain.ScanJob, scope s
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
-		if err := s.store.DeleteGameByPath(path); err != nil {
-			job.ErrorCount++
-			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
-			_ = s.store.AddJobEvent(job.ID, "error", "game cleanup failed: "+path)
-			_ = s.store.UpdateScanJob(job)
-			return nil
-		}
-		if err := s.store.DeleteVideoByPath(path); err != nil {
-			job.ErrorCount++
-			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
-			_ = s.store.AddJobEvent(job.ID, "error", "video cleanup failed: "+path)
-			_ = s.store.UpdateScanJob(job)
-			return nil
+		if ext != ".epub" {
+			if index, ok := s.unchangedMetadataOnlyFile(fileIndexes, path, info, ext); ok && canSkipUnchangedBook(library, path, index, ext) {
+				job.SkippedFiles++
+				_ = s.store.UpdateScanJob(job)
+				return nil
+			}
 		}
 
-		if index, ok := s.unchangedFileIndex(path, info, ext); ok {
+		if index, ok := s.unchangedFileIndex(fileIndexes, path, info, ext); ok {
 			if canSkipUnchangedBook(library, path, index, ext) {
 				job.SkippedFiles++
 				_ = s.store.UpdateScanJob(job)
@@ -253,6 +247,21 @@ func (s *Scanner) runScanJob(library domain.Library, job domain.ScanJob, scope s
 				job.ReclassifiedFiles++
 			}
 			job.SkippedFiles++
+			_ = s.store.UpdateScanJob(job)
+			return nil
+		}
+
+		if err := s.store.DeleteGameByPath(path); err != nil {
+			job.ErrorCount++
+			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
+			_ = s.store.AddJobEvent(job.ID, "error", "game cleanup failed: "+path)
+			_ = s.store.UpdateScanJob(job)
+			return nil
+		}
+		if err := s.store.DeleteVideoByPath(path); err != nil {
+			job.ErrorCount++
+			_ = s.recordPathError(library.ID, job.ID, path, domain.ErrorUnknownIO, err.Error())
+			_ = s.store.AddJobEvent(job.ID, "error", "video cleanup failed: "+path)
 			_ = s.store.UpdateScanJob(job)
 			return nil
 		}
@@ -405,6 +414,7 @@ func (s *Scanner) runScanJobConcurrent(library domain.Library, job domain.ScanJo
 	stopped := false
 	var stopErr error
 	dirStates := map[string]*scanDirState{}
+	fileIndexes, _ := s.store.ListFileIndexesByLibrary(library.ID)
 
 	updateJob := func(change func(*domain.ScanJob)) {
 		mu.Lock()
@@ -452,7 +462,7 @@ func (s *Scanner) runScanJobConcurrent(library domain.Library, job domain.ScanJo
 				if !checkControl() {
 					return
 				}
-				s.processScanTask(library, job.ID, task, scope, updateJob)
+				s.processScanTask(library, job.ID, task, scope, fileIndexes, updateJob)
 			}
 		}()
 	}
@@ -579,7 +589,7 @@ func (s *Scanner) runScanJobConcurrent(library domain.Library, job domain.ScanJo
 	return job, nil
 }
 
-func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scanFileTask, scope scanScope, updateJob func(func(*domain.ScanJob))) {
+func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scanFileTask, scope scanScope, fileIndexes map[string]store.FileIndex, updateJob func(func(*domain.ScanJob))) {
 	setCurrent := func(job *domain.ScanJob) {
 		job.CurrentPath = task.path
 	}
@@ -627,17 +637,8 @@ func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scan
 		})
 		return
 	}
-	if err := s.store.DeleteGameByPath(task.path); err != nil {
-		s.recordTaskError(library.ID, jobID, task.path, domain.ErrorUnknownIO, "game cleanup failed: ", err, updateJob)
-		return
-	}
-	if err := s.store.DeleteVideoByPath(task.path); err != nil {
-		s.recordTaskError(library.ID, jobID, task.path, domain.ErrorUnknownIO, "video cleanup failed: ", err, updateJob)
-		return
-	}
-
-	if scope.deferPageIndex && task.ext != ".epub" {
-		if index, ok := s.unchangedMetadataOnlyFile(task.path, task.info, task.ext); ok && canSkipUnchangedBook(library, task.path, index, task.ext) {
+	if task.ext != ".epub" {
+		if index, ok := s.unchangedMetadataOnlyFile(fileIndexes, task.path, task.info, task.ext); ok && canSkipUnchangedBook(library, task.path, index, task.ext) {
 			updateJob(func(job *domain.ScanJob) {
 				setCurrent(job)
 				job.SkippedFiles++
@@ -646,7 +647,7 @@ func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scan
 		}
 	}
 
-	if index, ok := s.unchangedFileIndex(task.path, task.info, task.ext); ok {
+	if index, ok := s.unchangedFileIndex(fileIndexes, task.path, task.info, task.ext); ok {
 		if canSkipUnchangedBook(library, task.path, index, task.ext) {
 			updateJob(func(job *domain.ScanJob) {
 				setCurrent(job)
@@ -669,6 +670,15 @@ func (s *Scanner) processScanTask(library domain.Library, jobID int64, task scan
 			}
 			job.SkippedFiles++
 		})
+		return
+	}
+
+	if err := s.store.DeleteGameByPath(task.path); err != nil {
+		s.recordTaskError(library.ID, jobID, task.path, domain.ErrorUnknownIO, "game cleanup failed: ", err, updateJob)
+		return
+	}
+	if err := s.store.DeleteVideoByPath(task.path); err != nil {
+		s.recordTaskError(library.ID, jobID, task.path, domain.ErrorUnknownIO, "video cleanup failed: ", err, updateJob)
 		return
 	}
 
@@ -808,12 +818,16 @@ func isVideoExt(ext string) bool {
 	}
 }
 
-func (s *Scanner) unchangedFileIndex(path string, info fs.FileInfo, ext string) (store.FileIndex, bool) {
-	index, err := s.store.FileIndexByPath(path)
-	if err != nil {
-		return store.FileIndex{}, false
+func (s *Scanner) unchangedFileIndex(fileIndexes map[string]store.FileIndex, path string, info fs.FileInfo, ext string) (store.FileIndex, bool) {
+	index, ok := fileIndexes[path]
+	if !ok {
+		var err error
+		index, err = s.store.FileIndexByPath(path)
+		if err != nil {
+			return store.FileIndex{}, false
+		}
 	}
-	ok := index.File.Size == info.Size() &&
+	ok = index.File.Size == info.Size() &&
 		index.File.Ext == ext &&
 		index.File.MTime.Equal(info.ModTime()) &&
 		index.Analyzed &&
@@ -827,8 +841,11 @@ func canSkipUnchangedBook(library domain.Library, path string, index store.FileI
 		if err != nil {
 			return false
 		}
-		seriesTitle, _ := seriesIdentityForRelPath(library.RootPath, relPath)
-		return index.Book.CollectionTitle == seriesTitle
+		if dir := filepath.Dir(relPath); dir == "." || dir == "/" {
+			seriesTitle, _ := seriesIdentityForRelPath(library.RootPath, relPath)
+			return index.Book.CollectionTitle == seriesTitle
+		}
+		return true
 	}
 	return strings.TrimSpace(index.Book.Creator) != "" || strings.TrimSpace(index.Book.Description) != ""
 }
@@ -859,12 +876,16 @@ func (s *Scanner) indexScanFile(library domain.Library, jobID int64, path string
 	return s.indexFile(library, jobID, path, info, ext)
 }
 
-func (s *Scanner) unchangedMetadataOnlyFile(path string, info fs.FileInfo, ext string) (store.FileIndex, bool) {
-	index, err := s.store.FileIndexByPath(path)
-	if err != nil {
-		return store.FileIndex{}, false
+func (s *Scanner) unchangedMetadataOnlyFile(fileIndexes map[string]store.FileIndex, path string, info fs.FileInfo, ext string) (store.FileIndex, bool) {
+	index, ok := fileIndexes[path]
+	if !ok {
+		var err error
+		index, err = s.store.FileIndexByPath(path)
+		if err != nil {
+			return store.FileIndex{}, false
+		}
 	}
-	ok := index.File.Size == info.Size() &&
+	ok = index.File.Size == info.Size() &&
 		index.File.Ext == ext &&
 		index.File.MTime.Equal(info.ModTime())
 	return index, ok

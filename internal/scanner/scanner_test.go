@@ -208,6 +208,119 @@ func TestScanLibraryDoesNotReopenUnchangedEPUBWhenMetadataExists(t *testing.T) {
 	}
 }
 
+func TestScanLibrarySkipsUnchangedComicWithoutReclassification(t *testing.T) {
+	root := t.TempDir()
+	comicPath := filepath.Join(root, "Publisher", "Series A", "book1.cbz")
+	makeZip(t, comicPath, map[string]string{"001.jpg": "image"})
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstJob, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstJob.Status != "completed" || firstJob.IndexedFiles != 1 {
+		t.Fatalf("first job = %#v, want one indexed comic", firstJob)
+	}
+
+	legacySeries, err := st.UpsertSeries(lib.ID, "Legacy Series", "Legacy Series")
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := st.ListSeries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var originalSeriesID int64
+	for _, item := range series {
+		if item.Title == "Publisher/Series A" {
+			originalSeriesID = item.ID
+			break
+		}
+	}
+	if originalSeriesID == 0 {
+		t.Fatalf("series = %#v, want Publisher/Series A", series)
+	}
+	books, err := st.ListBooks(originalSeriesID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(books) != 1 {
+		t.Fatalf("books = %#v, want one book before legacy move", books)
+	}
+	if _, err := st.UpdateBookIdentity(books[0].ID, legacySeries.ID, books[0].Title, books[0].Format); err != nil {
+		t.Fatal(err)
+	}
+
+	secondJob, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondJob.Status != "completed" || secondJob.SkippedFiles != 1 || secondJob.ReclassifiedFiles != 0 {
+		t.Fatalf("second job = %#v, want unchanged comic fast skipped without reclassification", secondJob)
+	}
+}
+
+func TestScanLibrarySkipsUnchangedComicWithoutPageIndex(t *testing.T) {
+	root := t.TempDir()
+	comicPath := filepath.Join(root, "Series A", "book1.cbz")
+	makeZip(t, comicPath, map[string]string{"001.jpg": "image"})
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Test", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := st.UpsertSeries(lib.ID, "Series A", "Series A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := st.UpsertBook(series.ID, "book1", "cbz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(comicPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertFile(book.ID, lib.ID, comicPath, "Series A/book1.cbz", info.Size(), info.ModTime(), ".cbz"); err != nil {
+		t.Fatal(err)
+	}
+
+	broken := make([]byte, info.Size())
+	copy(broken, []byte("not a zip"))
+	if err := os.WriteFile(comicPath, broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(comicPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := New(st).ScanLibrary(lib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != "completed" || job.ErrorCount != 0 || job.SkippedFiles != 1 || job.IndexedFiles != 0 {
+		t.Fatalf("job = %#v, want unchanged comic skipped without opening archive", job)
+	}
+}
+
 func TestScanLibraryDisambiguatesDuplicateEPUBMetadataTitles(t *testing.T) {
 	root := t.TempDir()
 	makeZip(t, filepath.Join(root, "Author", "Duplicate Book (160)", "first.epub"), sampleEPUBEntriesWithMetadata("Duplicate Book", "Author", "First copy."))
