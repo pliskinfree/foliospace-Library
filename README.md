@@ -10,7 +10,7 @@ It is not trying to become a complete Plex, Jellyfin, or Immich replacement. The
 
 The current implementation still starts from the FolioSpace Reader codebase and keeps the existing reading MVP operational while the model evolves toward `Asset` / `LibraryItem`.
 
-Current release branch: `0.931`.
+Current release branch: `0.932`.
 
 ## Screenshots
 
@@ -65,7 +65,7 @@ FOLIOSPACE_API_TOKEN=
 FOLIOSPACE_SCAN_WORKERS=2
 ```
 
-Set `FOLIOSPACE_API_TOKEN` to require API authentication from environment variables. If it is empty, release `0.931` can create the first access token from the web setup page and stores only a SHA-256 token hash in SQLite. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
+Set `FOLIOSPACE_API_TOKEN` to require API authentication from environment variables. If it is empty, release `0.932` can create the first access token from the web setup page and stores only a SHA-256 token hash in SQLite. Native clients can send `Authorization: Bearer <token>`. The web UI stays publicly loadable, then prompts for the access token and receives an HttpOnly cookie so covers, pages, and EPUB iframe resources can load through normal browser requests.
 
 Authentication helpers:
 
@@ -128,6 +128,16 @@ Release `0.931` is a PDF webtoon stability hotfix:
 - PDF webtoon canvas DPR is capped to reduce memory pressure on Safari, iPadOS, and other mobile browsers.
 - The release also includes the latest fullscreen comic reader display fixes merged from GitHub.
 
+## Release 0.932 Hotfix
+
+Release `0.932` is a large-library scan performance hotfix:
+
+- Full-library scans now preload existing file index rows once per job instead of querying SQLite for every unchanged book.
+- Unchanged CBZ/ZIP/PDF/7z entries can fast-skip from file metadata without reopening archives or forcing page analysis.
+- Existing nested comic collections are not reclassified during normal unchanged scans, avoiding expensive churn on very large libraries.
+- Root-level legacy collection migration is still preserved for older `Unsorted`-style imports.
+- The change keeps the on-demand analysis model: unchanged comics do not need page metadata populated before they can be skipped.
+
 ## MCP
 
 Agent integration docs are in [`docs/mcp/usage.md`](docs/mcp/usage.md). The MCP server wraps the stable Client API for diagnostics, library lookup, manifests, favorites/private-status shelves, preferences, private reader state, progress, scan jobs, scan worker settings, job control, and collection access. Heavy media streams still use the HTTP URLs returned by the API.
@@ -141,7 +151,7 @@ curl -fsSL https://foliospace.app/install-mcp.sh | sh
 Release maintainers can build macOS/Linux MCP packages with:
 
 ```bash
-VERSION=0.931 ./scripts/build-mcp-release.sh
+VERSION=0.932 ./scripts/build-mcp-release.sh
 ```
 
 ## Product Direction
@@ -161,10 +171,10 @@ ROM support is for indexing and launching user-owned local content. FolioSpace L
 
 ## Docker
 
-Release `0.931` image tag:
+Release `0.932` image tag:
 
 ```bash
-docker pull funland/foliospace-library:0.931
+docker pull funland/foliospace-library:0.932
 ```
 
 For local verification:
@@ -183,7 +193,7 @@ docker run -p 8080:8080 \
   -v /volume2/Books:/books:ro \
   -v /volume2/GameROMS:/games:ro \
   -e FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games \
-  funland/foliospace-library:0.931
+  funland/foliospace-library:0.932
 ```
 
 Open `http://localhost:8080`. On a fresh `/config`, the setup page asks for an access key and lets you choose a container path such as `/library`, `/books`, or `/games`. If a directory is missing from the setup page, add a Docker volume mapping first; FolioSpace Library can only browse paths visible inside the container.
@@ -198,11 +208,11 @@ Docker Hub releases are built by GitHub Actions from Git tags. Configure these r
 Then create and push a version tag:
 
 ```bash
-git tag v0.931
-git push github v0.931
+git tag v0.932
+git push github v0.932
 ```
 
-The workflow builds `linux/amd64` and `linux/arm64` images, then pushes `funland/foliospace-library:0.931` and `funland/foliospace-library:latest`.
+The workflow builds `linux/amd64` and `linux/arm64` images, then pushes `funland/foliospace-library:0.932` and `funland/foliospace-library:latest`.
 
 ## Current MVP Support
 
