@@ -417,18 +417,55 @@ export function setActiveProfileId(profileId: number | string) {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestOptions = RequestInit & {
+  timeoutMs?: number;
+};
+
+async function request<T>(path: string, init?: RequestOptions): Promise<T> {
   const token = getAuthToken();
   const profileId = getActiveProfileId();
-  const response = await fetch(path, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(profileId ? { "X-FolioSpace-Profile-Id": profileId } : {}),
-      ...(init?.headers ?? {}),
-    },
-    ...init,
-  });
+  const { timeoutMs, headers, signal, ...fetchInit } = init ?? {};
+  const requestHeaders = new Headers(headers);
+  if (!requestHeaders.has("Content-Type")) {
+    requestHeaders.set("Content-Type", "application/json");
+  }
+  if (token) {
+    requestHeaders.set("Authorization", `Bearer ${token}`);
+  }
+  if (profileId) {
+    requestHeaders.set("X-FolioSpace-Profile-Id", profileId);
+  }
+  const controller = timeoutMs ? new AbortController() : null;
+  let timeout: number | undefined;
+  let removeAbortListener: (() => void) | undefined;
+  if (controller) {
+    if (signal?.aborted) {
+      controller.abort();
+    } else if (signal) {
+      const abort = () => controller.abort();
+      signal.addEventListener("abort", abort, { once: true });
+      removeAbortListener = () => signal.removeEventListener("abort", abort);
+    }
+    timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  }
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...fetchInit,
+      headers: requestHeaders,
+      signal: controller?.signal ?? signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(`Request timed out: ${path}`);
+    }
+    throw error;
+  } finally {
+    if (timeout !== undefined) {
+      window.clearTimeout(timeout);
+    }
+    removeAbortListener?.();
+  }
   if (!response.ok) {
     if (response.status === 401) {
       throw new Error("Unauthorized");
@@ -440,14 +477,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  authStatus: () => request<AuthStatus>("/api/auth/status"),
-  authCheck: (token: string) =>
+  authStatus: (options?: RequestOptions) => request<AuthStatus>("/api/auth/status", options),
+  authCheck: (token: string, options?: RequestOptions) =>
     request<{ ok: boolean }>("/api/auth/check", {
+      ...options,
       method: "POST",
       body: JSON.stringify({ token }),
     }),
   authLogout: () => request<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
-  setupStatus: () => request<SetupStatus>("/api/setup/status"),
+  setupStatus: (options?: RequestOptions) => request<SetupStatus>("/api/setup/status", options),
   setupInitialize: (input: SetupInput) =>
     request<Library>("/api/setup/initialize", {
       method: "POST",

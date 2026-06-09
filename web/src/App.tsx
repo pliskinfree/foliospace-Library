@@ -26,6 +26,7 @@ const WEBTOON_PLACEHOLDER_HEIGHT = 2200;
 const PDF_WEBTOON_RENDER_RADIUS = 2;
 const PDF_WEBTOON_PLACEHOLDER_HEIGHT = 1600;
 const PDF_WEBTOON_MAX_CANVAS_PIXELS = 6_000_000;
+const BOOTSTRAP_TIMEOUT_MS = 12_000;
 type BookSort = "title" | "recently_added" | "last_read" | "progress" | "unread";
 type Locale = "zh" | "zht" | "en" | "ja" | "ko";
 type LibraryAssetType = "mixed" | "book" | "comic" | "game" | "video";
@@ -85,6 +86,7 @@ export function App() {
   const [authRequired, setAuthRequired] = useState(false);
   const [authInput, setAuthInput] = useState("");
   const [authError, setAuthError] = useState("");
+  const [authMessage, setAuthMessage] = useState("Checking access settings.");
   const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
   const [setupRequired, setSetupRequired] = useState(false);
   const [setupToken, setSetupToken] = useState("");
@@ -266,7 +268,8 @@ export function App() {
   useEffect(() => {
     async function bootstrap() {
       try {
-        const setup = await api.setupStatus();
+        setAuthMessage("Checking setup status.");
+        const setup = await api.setupStatus({ timeoutMs: BOOTSTRAP_TIMEOUT_MS });
         setSetupStatus(setup);
         if (!setup.initialized) {
           setSetupRequired(true);
@@ -280,7 +283,8 @@ export function App() {
           setStatus("Setup required");
           return;
         }
-        const auth = await api.authStatus();
+        setAuthMessage("Checking authentication mode.");
+        const auth = await api.authStatus({ timeoutMs: BOOTSTRAP_TIMEOUT_MS });
         setAuthEnabled(auth.enabled);
         const storedToken = getAuthToken();
         if (auth.enabled && !storedToken) {
@@ -289,8 +293,10 @@ export function App() {
           return;
         }
         if (auth.enabled) {
-          await api.authCheck(storedToken);
+          setAuthMessage("Checking saved access token.");
+          await api.authCheck(storedToken, { timeoutMs: BOOTSTRAP_TIMEOUT_MS });
         }
+        setAuthMessage("Loading library overview.");
         await refreshAll(true);
       } catch (error) {
         if (isUnauthorized(error)) {
@@ -299,7 +305,9 @@ export function App() {
           setStatus("Authentication required");
           return;
         }
-        setStatus(error instanceof Error ? error.message : "Failed to load");
+        const message = error instanceof Error ? error.message : "Failed to load";
+        setAuthError(message);
+        setStatus(message);
       } finally {
         setAuthChecked(true);
         setActiveTask(null);
@@ -2833,12 +2841,12 @@ export function App() {
           </form>
         </div>
       )}
-      {(!authChecked || authRequired) && (
+      {(!authChecked || authRequired || authError) && (
         <div className="authOverlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
           <form className="authPanel" onSubmit={submitAuth}>
             <div>
               <h1 id="auth-title">FolioSpace Library</h1>
-              <small>{authChecked ? "Enter the NAS access token." : "Checking access settings."}</small>
+              <small>{authChecked ? "Enter the NAS access token." : authMessage}</small>
             </div>
             {authRequired && (
               <>
@@ -2851,6 +2859,14 @@ export function App() {
                 />
                 {authError && <span className="authError">{authError}</span>}
                 <button disabled={!authInput.trim()}>Unlock</button>
+              </>
+            )}
+            {!authRequired && authError && (
+              <>
+                <span className="authError">{authError}</span>
+                <button type="button" onClick={() => window.location.reload()}>
+                  Retry
+                </button>
               </>
             )}
           </form>
