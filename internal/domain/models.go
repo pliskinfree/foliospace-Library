@@ -76,6 +76,8 @@ type Book struct {
 	ThumbnailURL     string    `json:"thumbnailUrl,omitempty"`
 	Analyzed         bool      `json:"analyzed"`
 	FilePath         string    `json:"filePath,omitempty"`
+	FileSize         int64     `json:"-"`
+	FileMTime        time.Time `json:"-"`
 	AddedAt          time.Time `json:"addedAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
 	CurrentPage      int       `json:"currentPage"`

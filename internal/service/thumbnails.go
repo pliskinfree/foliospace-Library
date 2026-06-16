@@ -25,8 +25,8 @@ import (
 )
 
 const thumbnailAlgorithmVersion = "v1"
-const thumbnailClientCacheVersion = thumbnailAlgorithmVersion + "-cover-refresh-3"
-const thumbnailCacheKeyProfile = "portrait-1x-3x4.15"
+const thumbnailClientCacheVersion = thumbnailAlgorithmVersion + "-cover-refresh-4"
+const thumbnailCacheKeyProfile = "portrait-1x-3x4.15-macos-resource-filter"
 const thumbnailJPEGQuality = 90
 const thumbnailTargetAspectRatio = 3.0 / 4.15
 

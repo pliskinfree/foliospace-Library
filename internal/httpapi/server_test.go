@@ -223,7 +223,8 @@ func TestAPIReadingPositionWebtoonV1(t *testing.T) {
 	}
 	defer conn.Close()
 	st := store.New(conn)
-	lib, err := st.CreateLibrary("Comics", "/library")
+	root := t.TempDir()
+	lib, err := st.CreateLibrary("Comics", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +326,7 @@ func TestThumbnailAPIAndWorkerControls(t *testing.T) {
 	if err := json.Unmarshal([]byte(volumesBody), &volumesPage); err != nil {
 		t.Fatal(err)
 	}
-	if len(volumesPage.Items) != 1 || volumesPage.Items[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-3" || volumesPage.Items[0].ThumbnailStatus == "" {
+	if len(volumesPage.Items) != 1 || volumesPage.Items[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-4" || volumesPage.Items[0].ThumbnailStatus == "" {
 		t.Fatalf("volumes page = %#v, want thumbnail URL with upgraded client cache version", volumesPage)
 	}
 	putJSON(t, ts.URL+"/api/books/"+itoa(book.ID)+"/progress", `{"pageIndex":1,"progressFraction":0.5}`)
@@ -334,7 +335,7 @@ func TestThumbnailAPIAndWorkerControls(t *testing.T) {
 	if err := json.Unmarshal([]byte(continueBody), &continueBooks); err != nil {
 		t.Fatal(err)
 	}
-	if len(continueBooks) != 1 || continueBooks[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-3" || continueBooks[0].ThumbnailStatus == "" {
+	if len(continueBooks) != 1 || continueBooks[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-4" || continueBooks[0].ThumbnailStatus == "" {
 		t.Fatalf("continue reading = %#v, want versioned thumbnail URL", continueBooks)
 	}
 	searchBody := get(t, ts.URL+"/api/search?q=book&limit=1")
@@ -342,7 +343,7 @@ func TestThumbnailAPIAndWorkerControls(t *testing.T) {
 	if err := json.Unmarshal([]byte(searchBody), &searchResult); err != nil {
 		t.Fatal(err)
 	}
-	if len(searchResult.Books) != 1 || searchResult.Books[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-3" || searchResult.Books[0].ThumbnailStatus == "" {
+	if len(searchResult.Books) != 1 || searchResult.Books[0].ThumbnailURL != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-4" || searchResult.Books[0].ThumbnailStatus == "" {
 		t.Fatalf("search result = %#v, want versioned thumbnail URL", searchResult)
 	}
 
@@ -593,7 +594,7 @@ func TestCollectionsIncludeRepresentativeThumbnail(t *testing.T) {
 	}
 	if len(collections) != 1 ||
 		collections[0]["coverBookId"] != float64(book.ID) ||
-		collections[0]["thumbnailUrl"] != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-3" ||
+		collections[0]["thumbnailUrl"] != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-4" ||
 		collections[0]["thumbnailStatus"] != "pending" {
 		t.Fatalf("collections = %#v, want representative thumbnail fields", collections)
 	}
@@ -607,7 +608,7 @@ func TestCollectionsIncludeRepresentativeThumbnail(t *testing.T) {
 	}
 	if len(home.Collections) != 1 ||
 		home.Collections[0]["coverBookId"] != float64(book.ID) ||
-		home.Collections[0]["thumbnailUrl"] != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-3" ||
+		home.Collections[0]["thumbnailUrl"] != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-4" ||
 		home.Collections[0]["thumbnailStatus"] != "pending" {
 		t.Fatalf("client home collections = %#v, want representative thumbnail fields", home.Collections)
 	}
@@ -764,7 +765,7 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	if !strings.Contains(homeBody, `"videoShelf"`) || !strings.Contains(homeBody, `"Demo Movie"`) || strings.Contains(homeBody, "Movies/Demo Movie.mp4") {
 		t.Fatalf("client home response %q is missing safe video shelf", homeBody)
 	}
-	if !strings.Contains(homeBody, `"/api/books/`+itoa(cbzBookID)+`/cover?v=v1-cover-refresh-3"`) {
+	if !strings.Contains(homeBody, `"/api/books/`+itoa(cbzBookID)+`/cover?v=v1-cover-refresh-4"`) {
 		t.Fatalf("client home response %q does not include cover URL", homeBody)
 	}
 
@@ -1160,7 +1161,14 @@ func TestAPIProfilesScopeWebReadingStateWithDefaultFallback(t *testing.T) {
 	}
 	defer conn.Close()
 	st := store.New(conn)
-	lib, err := st.CreateLibrary("Comics", "/library")
+	root := t.TempDir()
+	bookPath := filepath.Join(root, "Series A", "Shared Book.cbz")
+	makeZip(t, bookPath, map[string]string{"001.jpg": "image"})
+	info, err := os.Stat(bookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lib, err := st.CreateLibrary("Comics", root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1170,6 +1178,9 @@ func TestAPIProfilesScopeWebReadingStateWithDefaultFallback(t *testing.T) {
 	}
 	book, err := st.UpsertBook(series.ID, "Shared Book", "cbz")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.UpsertFile(book.ID, lib.ID, bookPath, "Series A/Shared Book.cbz", info.Size(), info.ModTime(), ".cbz"); err != nil {
 		t.Fatal(err)
 	}
 

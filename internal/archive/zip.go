@@ -114,6 +114,9 @@ func imageFiles(files []*zip.File) []*zip.File {
 		if file.FileInfo().IsDir() {
 			continue
 		}
+		if isMacOSResourceForkEntry(file.Name) {
+			continue
+		}
 		if _, ok := imageExts[strings.ToLower(filepath.Ext(file.Name))]; ok {
 			out = append(out, file)
 		}
@@ -122,6 +125,19 @@ func imageFiles(files []*zip.File) []*zip.File {
 		return normalizeEntryName(out[i].Name) < normalizeEntryName(out[j].Name)
 	})
 	return out
+}
+
+func isMacOSResourceForkEntry(name string) bool {
+	clean := strings.Trim(strings.ReplaceAll(name, "\\", "/"), "/")
+	if clean == "" {
+		return false
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == "__MACOSX" || strings.HasPrefix(part, "._") {
+			return true
+		}
+	}
+	return false
 }
 
 func selectCoverFile(files []*zip.File) *zip.File {

@@ -76,6 +76,96 @@ func TestListDirectoriesRestrictsToConfiguredRoots(t *testing.T) {
 	}
 }
 
+func TestBookShelvesSkipMissingOrModifiedFiles(t *testing.T) {
+	root := t.TempDir()
+	validPath := filepath.Join(root, "valid.cbz")
+	missingPath := filepath.Join(root, "missing.cbz")
+	modifiedPath := filepath.Join(root, "modified.cbz")
+	for _, path := range []string{validPath, missingPath, modifiedPath} {
+		if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	indexedTime := time.Unix(1700000000, 0)
+	for _, path := range []string{validPath, missingPath, modifiedPath} {
+		if err := os.Chtimes(path, indexedTime, indexedTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	st := store.New(conn)
+	lib, err := st.CreateLibrary("Comics", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	series, err := st.UpsertSeries(lib.ID, "Shelf", "Shelf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	books := make([]domain.Book, 0, 3)
+	for _, item := range []struct {
+		title string
+		path  string
+	}{
+		{title: "Valid", path: validPath},
+		{title: "Missing", path: missingPath},
+		{title: "Modified", path: modifiedPath},
+	} {
+		book, err := st.UpsertBook(series.ID, item.title, "cbz")
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(item.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.UpsertFile(book.ID, lib.ID, item.path, filepath.Base(item.path), info.Size(), info.ModTime(), ".cbz"); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SaveProgress(book.ID, 4); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.UpdateBookPrivateState(book.ID, domain.BookPrivateState{Status: "want", Favorite: true}); err != nil {
+			t.Fatal(err)
+		}
+		books = append(books, book)
+	}
+	if err := os.Remove(missingPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(modifiedPath, []byte("modified-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	modifiedTime := indexedTime.Add(2 * time.Hour)
+	if err := os.Chtimes(modifiedPath, modifiedTime, modifiedTime); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewWithConfig(st, t.TempDir())
+	continueReading, err := svc.ContinueReading(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	favorites, err := svc.FavoriteBooks(10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := svc.BooksByPrivateStatus("want", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for label, shelf := range map[string][]domain.Book{"continue": continueReading, "favorites": favorites, "want": want} {
+		if len(shelf) != 1 || shelf[0].ID != books[0].ID {
+			t.Fatalf("%s shelf = %#v, want only current valid book", label, shelf)
+		}
+	}
+}
+
 func TestOpenVideoThumbnailUsesLocalSidecarImage(t *testing.T) {
 	root := t.TempDir()
 	videoPath := filepath.Join(root, "Demo Movie.mp4")

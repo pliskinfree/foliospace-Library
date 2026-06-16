@@ -31,6 +31,27 @@ func TestListPagesSortsImagesAndSkipsNonImages(t *testing.T) {
 	}
 }
 
+func TestListPagesSkipsMacOSResourceForkEntries(t *testing.T) {
+	path := makeZip(t, map[string]string{
+		"Book/001.png":            "one",
+		"Book/002.jpg":            "two",
+		"Book/._001.png":          "resource fork",
+		"__MACOSX/Book/._001.png": "resource fork",
+		"__MACOSX/Book/._002.jpg": "resource fork",
+	})
+
+	pages, err := ListPages(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("pages len = %d, want 2", len(pages))
+	}
+	if pages[0].Name != "Book/001.png" || pages[1].Name != "Book/002.jpg" {
+		t.Fatalf("pages = %#v, want only real image pages", pages)
+	}
+}
+
 func TestOpenPageStreamsExpectedBytes(t *testing.T) {
 	path := makeZip(t, map[string]string{
 		"002.jpg": "two",

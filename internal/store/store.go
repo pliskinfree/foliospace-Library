@@ -2340,6 +2340,7 @@ func scanBook(row scanner) (domain.Book, error) {
 	var addedAt string
 	var updatedAt string
 	var lastReadAt string
+	var fileMTime string
 	var tags string
 	if err := row.Scan(
 		&book.ID,
@@ -2353,6 +2354,8 @@ func scanBook(row scanner) (domain.Book, error) {
 		&book.CoverStatus,
 		&analyzed,
 		&book.FilePath,
+		&book.FileSize,
+		&fileMTime,
 		&addedAt,
 		&updatedAt,
 		&book.CurrentPage,
@@ -2373,6 +2376,7 @@ func scanBook(row scanner) (domain.Book, error) {
 	book.Analyzed = analyzed != 0
 	book.Favorite = favorite != 0
 	book.Tags = decodeTags(tags)
+	book.FileMTime = parseTime(fileMTime)
 	book.AddedAt = parseTime(addedAt)
 	book.UpdatedAt = parseTime(updatedAt)
 	book.LastReadAt = parseTime(lastReadAt)
@@ -2418,7 +2422,7 @@ func profileIDSQL(profileID int64) string {
 func bookSelectSQL(profileID int64) string {
 	profileIDValue := profileIDSQL(profileID)
 	return `SELECT b.id, b.series_id, s.title, b.title, b.creator, b.description, b.format, b.page_count, b.cover_status, b.analyzed,
-			COALESCE(f.abs_path, ''), b.created_at, b.updated_at,
+			COALESCE(f.abs_path, ''), COALESCE(f.size, 0), COALESCE(f.mtime, ''), b.created_at, b.updated_at,
 			COALESCE(rp.page_index, 0), COALESCE(rp.progress_fraction, 0), COALESCE(rp.updated_at, ''),
 			COALESCE(ps.private_status, ''), COALESCE(ps.favorite, 0), COALESCE(ps.rating, 0), COALESCE(ps.tags, ''), COALESCE(ps.summary, '')
 		FROM books b

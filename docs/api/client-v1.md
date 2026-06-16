@@ -218,8 +218,8 @@ Clients should treat every returned `coverUrl`, `thumbnailUrl`, page URL, EPUB r
 Book cover and thumbnail URLs may include a client cache-busting query value such as:
 
 ```text
-/api/books/42/cover?v=v1-cover-refresh-3
-/api/books/42/thumbnail?size=small&v=v1-cover-refresh-3
+/api/books/42/cover?v=v1-cover-refresh-4
+/api/books/42/thumbnail?size=small&v=v1-cover-refresh-4
 ```
 
 That query value is for browser and client cache invalidation only. It is separate from the thumbnail cache algorithm, which remains `v1`. Older clients and integrations can still use the pre-existing routes:
@@ -409,7 +409,7 @@ Response:
       "bookCount": 12,
       "coverBookId": 42,
       "thumbnailStatus": "pending",
-      "thumbnailUrl": "/api/books/42/thumbnail?size=small&v=v1-cover-refresh-3",
+      "thumbnailUrl": "/api/books/42/thumbnail?size=small&v=v1-cover-refresh-4",
       "favorite": true,
       "liked": false
     }

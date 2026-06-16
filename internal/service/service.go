@@ -664,19 +664,35 @@ func oneOf(value string, allowed ...string) bool {
 }
 
 func (s *Service) ContinueReading(limit int) ([]domain.Book, error) {
-	return s.store.ListContinueReading(limit)
+	books, err := s.store.ListContinueReading(shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
 }
 
 func (s *Service) ContinueReadingForProfile(profileID int64, limit int) ([]domain.Book, error) {
-	return s.store.ListContinueReadingForProfile(profileID, limit)
+	books, err := s.store.ListContinueReadingForProfile(profileID, shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
 }
 
 func (s *Service) RecentBooks(limit int) ([]domain.Book, error) {
-	return s.store.ListRecentBooks(limit)
+	books, err := s.store.ListRecentBooks(shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
 }
 
 func (s *Service) RecentBooksForProfile(profileID int64, limit int) ([]domain.Book, error) {
-	return s.store.ListRecentBooksForProfile(profileID, limit)
+	books, err := s.store.ListRecentBooksForProfile(profileID, shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
 }
 
 func (s *Service) RecentGames(limit int) ([]domain.GameAsset, error) {
@@ -1056,19 +1072,93 @@ func recentMarker(path string, ttl time.Duration) bool {
 }
 
 func (s *Service) FavoriteBooks(limit int) ([]domain.Book, error) {
-	return s.store.ListFavoriteBooks(limit)
+	books, err := s.store.ListFavoriteBooks(shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
 }
 
 func (s *Service) FavoriteBooksForProfile(profileID int64, limit int) ([]domain.Book, error) {
-	return s.store.ListFavoriteBooksForProfile(profileID, limit)
+	books, err := s.store.ListFavoriteBooksForProfile(profileID, shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
 }
 
 func (s *Service) BooksByPrivateStatus(status string, limit int) ([]domain.Book, error) {
-	return s.store.ListBooksByPrivateStatus(status, limit)
+	books, err := s.store.ListBooksByPrivateStatus(status, shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
 }
 
 func (s *Service) BooksByPrivateStatusForProfile(profileID int64, status string, limit int) ([]domain.Book, error) {
-	return s.store.ListBooksByPrivateStatusForProfile(profileID, status, limit)
+	books, err := s.store.ListBooksByPrivateStatusForProfile(profileID, status, shelfFetchLimit(limit))
+	if err != nil {
+		return nil, err
+	}
+	return filterCurrentBookFiles(books, limit), nil
+}
+
+func shelfFetchLimit(limit int) int {
+	normalized := shelfLimit(limit)
+	fetch := normalized * 4
+	if fetch < 24 {
+		return 24
+	}
+	if fetch > 100 {
+		return 100
+	}
+	return fetch
+}
+
+func shelfLimit(limit int) int {
+	if limit <= 0 {
+		return 12
+	}
+	if limit > 100 {
+		return 100
+	}
+	return limit
+}
+
+func filterCurrentBookFiles(books []domain.Book, limit int) []domain.Book {
+	maxItems := shelfLimit(limit)
+	out := make([]domain.Book, 0, min(maxItems, len(books)))
+	for _, book := range books {
+		if !bookFileMatchesIndex(book) {
+			continue
+		}
+		out = append(out, book)
+		if len(out) >= maxItems {
+			break
+		}
+	}
+	return out
+}
+
+func bookFileMatchesIndex(book domain.Book) bool {
+	if strings.TrimSpace(book.FilePath) == "" || book.FileSize <= 0 || book.FileMTime.IsZero() {
+		return false
+	}
+	info, err := os.Stat(book.FilePath)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	if info.Size() != book.FileSize {
+		return false
+	}
+	return absDuration(info.ModTime().Sub(book.FileMTime)) <= time.Second
+}
+
+func absDuration(value time.Duration) time.Duration {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func libretroBoxartCandidates(game domain.GameAsset) []string {
