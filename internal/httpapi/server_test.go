@@ -598,6 +598,26 @@ func TestCollectionsIncludeRepresentativeThumbnail(t *testing.T) {
 		collections[0]["thumbnailStatus"] != "pending" {
 		t.Fatalf("collections = %#v, want representative thumbnail fields", collections)
 	}
+	pagedCollectionsBody := get(t, ts.URL+"/api/collections?primaryType=comic&limit=1&offset=0&sort=title&direction=asc")
+	var pagedCollections struct {
+		Items   []map[string]any `json:"items"`
+		Total   int64            `json:"total"`
+		Limit   int              `json:"limit"`
+		Offset  int              `json:"offset"`
+		HasMore bool             `json:"hasMore"`
+	}
+	if err := json.Unmarshal([]byte(pagedCollectionsBody), &pagedCollections); err != nil {
+		t.Fatal(err)
+	}
+	if pagedCollections.Total != 1 ||
+		pagedCollections.Limit != 1 ||
+		pagedCollections.Offset != 0 ||
+		pagedCollections.HasMore ||
+		len(pagedCollections.Items) != 1 ||
+		pagedCollections.Items[0]["primaryType"] != "comic" ||
+		pagedCollections.Items[0]["thumbnailUrl"] != "/api/books/"+itoa(book.ID)+"/thumbnail?size=small&v=v1-cover-refresh-4" {
+		t.Fatalf("paged collections = %#v, want comic page with representative thumbnail", pagedCollections)
+	}
 
 	homeBody := get(t, ts.URL+"/api/client/home")
 	var home struct {
@@ -750,6 +770,9 @@ func TestClientAPIHomeAndManifestsHideFilePaths(t *testing.T) {
 	}
 	if !strings.Contains(infoBody, `"bookCatalog":true`) {
 		t.Fatalf("client info response %q does not advertise book catalog", infoBody)
+	}
+	if !strings.Contains(infoBody, `"collectionCatalog":true`) {
+		t.Fatalf("client info response %q does not advertise collection catalog", infoBody)
 	}
 
 	homeBody := get(t, ts.URL+"/api/client/home")

@@ -505,6 +505,10 @@ func (s *Service) ListSeriesForProfileLimit(profileID int64, limit int) ([]domai
 	return append(series, gameCollections...), nil
 }
 
+func (s *Service) ListSeriesPageForProfile(profileID int64, options domain.CollectionListOptions) (domain.CollectionListPage, error) {
+	return s.store.ListSeriesPageForProfile(profileID, options)
+}
+
 func (s *Service) UpdateCollectionPrivateStateForProfile(seriesID int64, profileID int64, state domain.CollectionPrivateState) (domain.Series, error) {
 	profileID, err := s.store.ResolveProfileID(profileID)
 	if err != nil {

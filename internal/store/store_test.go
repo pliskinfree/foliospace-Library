@@ -941,6 +941,75 @@ func TestStoreListsBooksPageWithSearchAndSort(t *testing.T) {
 	}
 }
 
+func TestStoreListsSeriesPageWithPrimaryTypeAndSort(t *testing.T) {
+	conn, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	s := New(conn)
+	comicLib, err := s.CreateLibraryWithType("Comics", "/library", "comic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookLib, err := s.CreateLibraryWithType("Books", "/books", "book")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comicA, err := s.UpsertSeries(comicLib.ID, "Alpha Comic", "Alpha Comic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comicB, err := s.UpsertSeries(comicLib.ID, "Beta Comic", "Beta Comic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookSeries, err := s.UpsertSeries(bookLib.ID, "Novel Shelf", "Novel Shelf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []struct {
+		seriesID int64
+		libID    int64
+		title    string
+		format   string
+	}{
+		{seriesID: comicA.ID, libID: comicLib.ID, title: "Alpha 01", format: "cbz"},
+		{seriesID: comicB.ID, libID: comicLib.ID, title: "Beta 01", format: "zip"},
+		{seriesID: bookSeries.ID, libID: bookLib.ID, title: "Novel 01", format: "epub"},
+	} {
+		book, err := s.UpsertBook(item.seriesID, item.title, item.format)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.UpsertFile(book.ID, item.libID, "/tmp/"+item.title+"."+item.format, item.title+"."+item.format, 100, time.Now(), "."+item.format); err != nil {
+			t.Fatal(err)
+		}
+	}
+	comics, err := s.ListSeriesPageForProfile(defaultProfileID, domain.CollectionListOptions{
+		PrimaryType: "comic",
+		Limit:       1,
+		Sort:        "title",
+		Direction:   "desc",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if comics.Total != 2 || len(comics.Items) != 1 || !comics.HasMore || comics.Items[0].Title != "Beta Comic" {
+		t.Fatalf("comic page = %#v, want first descending comic collection", comics)
+	}
+	books, err := s.ListSeriesPageForProfile(defaultProfileID, domain.CollectionListOptions{
+		PrimaryType: "book",
+		Limit:       60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if books.Total != 1 || len(books.Items) != 1 || books.Items[0].Title != "Novel Shelf" || books.Items[0].PrimaryType != "book" {
+		t.Fatalf("book page = %#v, want one book collection", books)
+	}
+}
+
 func TestStoreSearchesBooksAndPersistsPrivateState(t *testing.T) {
 	conn, err := db.Open(t.TempDir())
 	if err != nil {

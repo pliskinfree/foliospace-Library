@@ -264,6 +264,7 @@ Response:
     "pageStreaming": true,
     "pageImageDownsample": true,
     "bookCatalog": true,
+    "collectionCatalog": true,
     "gameShelf": true,
     "gameCatalog": true,
     "videoCatalog": true,
@@ -1132,6 +1133,51 @@ The native home screen can start from `/api/client/home`, but collection browsin
 ### `GET /api/collections`
 
 Lists collections. Directory collections include `libraryId` and `directoryPath` for legacy web UI flows. When a representative book is available, the response also includes optional `coverBookId`, `thumbnailStatus`, and `thumbnailUrl` fields matching the collection fields returned by `/api/client/home`. Responses also include profile-scoped `favorite` and `liked` flags when a profile is selected with `X-FolioSpace-Profile-Id` or `profileId`.
+
+Without query parameters, the response remains the legacy collection array. When any paged query parameter is present, the response is a paginated object:
+
+```http
+GET /api/collections?primaryType=book&limit=60&offset=0&sort=recent&direction=desc
+GET /api/collections?primaryType=comic&limit=60&offset=0&sort=title&direction=asc
+```
+
+Query:
+
+- `primaryType`: optional exact collection type filter. Common values are `book`, `comic`, `game`, and `video`; use `all` or omit it to include every type.
+- `limit`: optional, default `60`, max `200`.
+- `offset`: optional, default `0`.
+- `q`: optional text filter against collection title.
+- `sort`: optional. Supported values are `title`, `recent`, `recently_added`, `book_count`, and `count`. Unknown values fall back to `title`.
+- `direction`: optional, `asc` or `desc`. Unknown values fall back to `asc`; recent/count sorts keep default descending behavior when omitted.
+
+Paged response:
+
+```json
+{
+  "items": [
+    {
+      "id": 7,
+      "libraryId": 1,
+      "title": "Series A",
+      "directoryPath": "Series A",
+      "collectionType": "directory",
+      "primaryType": "comic",
+      "bookCount": 12,
+      "coverBookId": 42,
+      "thumbnailStatus": "pending",
+      "thumbnailUrl": "/api/books/42/thumbnail?size=small&v=v1-cover-refresh-4",
+      "favorite": false,
+      "liked": false
+    }
+  ],
+  "total": 123,
+  "limit": 60,
+  "offset": 0,
+  "hasMore": true
+}
+```
+
+Native home screens should prefer this paginated collection catalog for book/comic overview tabs, then open `/api/collections/{collectionId}/volumes` for the volumes inside one collection.
 
 ### `PUT /api/collections/{collectionId}/private-state`
 

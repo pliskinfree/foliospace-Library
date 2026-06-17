@@ -61,6 +61,23 @@ type Series struct {
 	Liked          bool   `json:"liked"`
 }
 
+type CollectionListOptions struct {
+	Limit       int
+	Offset      int
+	PrimaryType string
+	Sort        string
+	Direction   string
+	Query       string
+}
+
+type CollectionListPage struct {
+	Items   []Series `json:"items"`
+	Total   int64    `json:"total"`
+	Limit   int      `json:"limit"`
+	Offset  int      `json:"offset"`
+	HasMore bool     `json:"hasMore"`
+}
+
 type Book struct {
 	ID               int64     `json:"id"`
 	SeriesID         int64     `json:"seriesId"`

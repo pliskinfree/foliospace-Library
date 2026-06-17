@@ -299,6 +299,7 @@ func (s *Server) handleClientInfo(w http.ResponseWriter, r *http.Request) {
 			PageStreaming:       true,
 			PageImageDownsample: true,
 			BookCatalog:         true,
+			CollectionCatalog:   true,
 			GameShelf:           true,
 			GameCatalog:         true,
 			VideoCatalog:        true,
@@ -939,6 +940,18 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	if hasCollectionListQuery(r) {
+		page, err := s.service.ListSeriesPageForProfile(s.requestProfileID(r), domain.CollectionListOptions{
+			Limit:       queryInt(r, "limit", 60, 200),
+			Offset:      queryInt(r, "offset", 0, 0),
+			PrimaryType: r.URL.Query().Get("primaryType"),
+			Sort:        r.URL.Query().Get("sort"),
+			Direction:   r.URL.Query().Get("direction"),
+			Query:       r.URL.Query().Get("q"),
+		})
+		writeJSONOrError(w, clientCollectionListPage(page), err)
+		return
+	}
 	items, err := s.service.ListSeriesForProfile(s.requestProfileID(r))
 	writeJSONOrError(w, clientCollections(items), err)
 }
@@ -1276,6 +1289,11 @@ func hasBookListQuery(r *http.Request) bool {
 	return query.Has("limit") || query.Has("offset") || query.Has("q") || query.Has("sort") || query.Has("direction") || query.Has("format")
 }
 
+func hasCollectionListQuery(r *http.Request) bool {
+	query := r.URL.Query()
+	return query.Has("limit") || query.Has("offset") || query.Has("q") || query.Has("sort") || query.Has("direction") || query.Has("primaryType")
+}
+
 func (s *Server) streamPage(w http.ResponseWriter, r *http.Request, bookID int64, pageIndex int) {
 	book, err := s.service.Book(bookID)
 	if err != nil {
@@ -1599,6 +1617,7 @@ type clientCapabilities struct {
 	PageStreaming       bool `json:"pageStreaming"`
 	PageImageDownsample bool `json:"pageImageDownsample"`
 	BookCatalog         bool `json:"bookCatalog"`
+	CollectionCatalog   bool `json:"collectionCatalog"`
 	GameShelf           bool `json:"gameShelf"`
 	GameCatalog         bool `json:"gameCatalog"`
 	VideoCatalog        bool `json:"videoCatalog"`
@@ -1648,6 +1667,14 @@ type clientCollection struct {
 	ThumbnailURL    string `json:"thumbnailUrl,omitempty"`
 	Favorite        bool   `json:"favorite"`
 	Liked           bool   `json:"liked"`
+}
+
+type clientCollectionListPageResponse struct {
+	Items   []clientCollection `json:"items"`
+	Total   int64              `json:"total"`
+	Limit   int                `json:"limit"`
+	Offset  int                `json:"offset"`
+	HasMore bool               `json:"hasMore"`
 }
 
 type clientBook struct {
@@ -1822,6 +1849,16 @@ func clientCollections(collections []domain.Series) []clientCollection {
 		out = append(out, item)
 	}
 	return out
+}
+
+func clientCollectionListPage(page domain.CollectionListPage) clientCollectionListPageResponse {
+	return clientCollectionListPageResponse{
+		Items:   clientCollections(page.Items),
+		Total:   page.Total,
+		Limit:   page.Limit,
+		Offset:  page.Offset,
+		HasMore: page.HasMore,
+	}
 }
 
 func clientBooks(books []domain.Book) []clientBook {

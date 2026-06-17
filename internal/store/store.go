@@ -308,33 +308,58 @@ func (s *Store) ListSeriesForProfileLimit(profileID int64, limit int) ([]domain.
 	return s.listSeriesForProfile(profileID, limit)
 }
 
+func (s *Store) ListSeriesPageForProfile(profileID int64, options domain.CollectionListOptions) (domain.CollectionListPage, error) {
+	profileID, err := s.ResolveProfileID(profileID)
+	if err != nil {
+		return domain.CollectionListPage{}, err
+	}
+	options.Limit = normalizeCollectionListLimit(options.Limit)
+	if options.Offset < 0 {
+		options.Offset = 0
+	}
+	where, args := collectionListWhere(options)
+	countArgs := append([]any(nil), args...)
+	var total int64
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM (`+collectionListBaseSQL()+`) c`+where, countArgs...).Scan(&total); err != nil {
+		return domain.CollectionListPage{}, err
+	}
+	queryArgs := append([]any(nil), args...)
+	queryArgs = append(queryArgs, options.Limit, options.Offset)
+	rows, err := s.db.Query(`SELECT c.id, c.library_id, c.title, c.directory_path, c.collection_type, c.primary_type, c.book_count, c.cover_book_id
+		FROM (`+collectionListBaseSQL()+`) c`+where+collectionListOrderBy(options.Sort, options.Direction)+`
+		LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return domain.CollectionListPage{}, err
+	}
+	defer rows.Close()
+	items := make([]domain.Series, 0)
+	for rows.Next() {
+		series, err := scanSeries(rows)
+		if err != nil {
+			return domain.CollectionListPage{}, err
+		}
+		items = append(items, series)
+	}
+	if err := rows.Err(); err != nil {
+		return domain.CollectionListPage{}, err
+	}
+	items, err = s.applyCollectionPrivateStates(profileID, items)
+	if err != nil {
+		return domain.CollectionListPage{}, err
+	}
+	return domain.CollectionListPage{
+		Items:   items,
+		Total:   total,
+		Limit:   options.Limit,
+		Offset:  options.Offset,
+		HasMore: int64(options.Offset+len(items)) < total,
+	}, nil
+}
+
 func (s *Store) listSeriesForProfile(profileID int64, limit int) ([]domain.Series, error) {
-	query := `SELECT s.id, s.library_id, s.title,
-			COALESCE(NULLIF(s.directory_path, ''), MIN(CASE
-				WHEN f.rel_path IS NULL THEN ''
-				WHEN INSTR(f.rel_path, '/') = 0 THEN '.'
-				ELSE SUBSTR(f.rel_path, 1, INSTR(f.rel_path, '/') - 1)
-			END), ''),
-			s.collection_type,
-			CASE
-				WHEN l.asset_type IN ('book', 'comic', 'game', 'video') THEN l.asset_type
-				WHEN SUM(CASE WHEN b.format IN ('epub', 'pdf') THEN 1 ELSE 0 END) > SUM(CASE WHEN b.format IN ('cbz', 'zip', 'cbr', 'rar', '7z') THEN 1 ELSE 0 END) THEN 'book'
-				ELSE 'comic'
-			END,
-			COUNT(DISTINCT b.id),
-			COALESCE((
-				SELECT b2.id
-				FROM books b2
-				WHERE b2.series_id = s.id
-				ORDER BY b2.title, b2.id
-				LIMIT 1
-			), 0)
-		FROM series s
-		JOIN libraries l ON l.id = s.library_id
-		LEFT JOIN books b ON b.series_id = s.id
-		LEFT JOIN files f ON f.book_id = b.id
-		GROUP BY s.id, s.library_id, s.title, l.asset_type
-		ORDER BY s.title`
+	query := `SELECT c.id, c.library_id, c.title, c.directory_path, c.collection_type, c.primary_type, c.book_count, c.cover_book_id
+		FROM (` + collectionListBaseSQL() + `) c
+		ORDER BY c.title`
 	args := []any{}
 	if limit > 0 {
 		query += ` LIMIT ?`
@@ -358,6 +383,77 @@ func (s *Store) listSeriesForProfile(profileID int64, limit int) ([]domain.Serie
 		return nil, err
 	}
 	return s.applyCollectionPrivateStates(profileID, out)
+}
+
+func collectionListBaseSQL() string {
+	return `SELECT s.id AS id, s.library_id AS library_id, s.title AS title,
+			COALESCE(NULLIF(s.directory_path, ''), MIN(CASE
+				WHEN f.rel_path IS NULL THEN ''
+				WHEN INSTR(f.rel_path, '/') = 0 THEN '.'
+				ELSE SUBSTR(f.rel_path, 1, INSTR(f.rel_path, '/') - 1)
+			END), '') AS directory_path,
+			s.collection_type AS collection_type,
+			CASE
+				WHEN l.asset_type IN ('book', 'comic', 'game', 'video') THEN l.asset_type
+				WHEN SUM(CASE WHEN b.format IN ('epub', 'pdf') THEN 1 ELSE 0 END) > SUM(CASE WHEN b.format IN ('cbz', 'zip', 'cbr', 'rar', '7z') THEN 1 ELSE 0 END) THEN 'book'
+				ELSE 'comic'
+			END AS primary_type,
+			COUNT(DISTINCT b.id) AS book_count,
+			COALESCE((
+				SELECT b2.id
+				FROM books b2
+				WHERE b2.series_id = s.id
+				ORDER BY b2.title, b2.id
+				LIMIT 1
+			), 0) AS cover_book_id,
+			MAX(b.created_at) AS created_at
+		FROM series s
+		JOIN libraries l ON l.id = s.library_id
+		LEFT JOIN books b ON b.series_id = s.id
+		LEFT JOIN files f ON f.book_id = b.id
+		GROUP BY s.id, s.library_id, s.title, l.asset_type`
+}
+
+func normalizeCollectionListLimit(limit int) int {
+	if limit <= 0 {
+		return 60
+	}
+	if limit > 200 {
+		return 200
+	}
+	return limit
+}
+
+func collectionListWhere(options domain.CollectionListOptions) (string, []any) {
+	whereParts := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	primaryType := strings.ToLower(strings.TrimSpace(options.PrimaryType))
+	if primaryType != "" && primaryType != "all" {
+		whereParts = append(whereParts, "LOWER(c.primary_type) = ?")
+		args = append(args, primaryType)
+	}
+	query := strings.TrimSpace(options.Query)
+	if query != "" {
+		whereParts = append(whereParts, `LOWER(c.title) LIKE LOWER(?) ESCAPE '\'`)
+		args = append(args, "%"+escapeLike(query)+"%")
+	}
+	if len(whereParts) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(whereParts, " AND "), args
+}
+
+func collectionListOrderBy(sort string, direction string) string {
+	titleDir := normalizedSortDirection(direction, "ASC")
+	recentDir := normalizedSortDirection(direction, "DESC")
+	switch strings.ToLower(strings.TrimSpace(sort)) {
+	case "recent", "recently_added":
+		return " ORDER BY c.created_at " + recentDir + ", c.title ASC, c.id ASC"
+	case "book_count", "count":
+		return " ORDER BY c.book_count " + normalizedSortDirection(direction, "DESC") + ", c.title ASC, c.id ASC"
+	default:
+		return " ORDER BY c.title " + titleDir + ", c.id " + titleDir
+	}
 }
 
 func (s *Store) ListGamePlatformCollections() ([]domain.Series, error) {
