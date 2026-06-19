@@ -1687,7 +1687,7 @@ export function App() {
       : `${selectedBook.format}Reader`
     : "";
   const readerClassName = selectedBook
-    ? `reader ${selectedBookReaderClass}${useWebtoonReader ? " webtoonMode" : ""}${readerFullscreen ? " immersiveMode" : ""}`
+    ? `reader ${selectedBookReaderClass}${selectedBook.format === "epub" ? ` epubTheme-${epubTheme}` : ""}${useWebtoonReader ? " webtoonMode" : ""}${readerFullscreen ? " immersiveMode" : ""}`
     : "reader";
   const visibleContinueBooks = continueBooks.slice(0, 4);
 

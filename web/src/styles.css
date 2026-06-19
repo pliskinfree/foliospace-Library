@@ -2246,6 +2246,14 @@ button.danger:hover {
   padding: clamp(8px, 1.6vw, 22px);
 }
 
+.reader.epubTheme-dark .pageStage.epub {
+  background: #0f1416;
+}
+
+.reader.epubTheme-sepia .pageStage.epub {
+  background: #e9dfca;
+}
+
 .pageStage.pdf {
   background: #eef2f3;
   padding: clamp(8px, 1.6vw, 22px);
