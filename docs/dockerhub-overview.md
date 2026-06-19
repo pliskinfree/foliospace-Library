@@ -4,6 +4,15 @@ FolioSpace Library is a self-hosted personal digital asset library for NAS, Dock
 
 It is not a cloud media service and does not distribute books, comics, ROMs, movies, or other media content. It indexes user-owned local files and exposes stable service URLs to web and native clients without leaking real NAS paths.
 
+## 0.966 Release: Embedded Comic Metadata
+
+Release `0.966` adds embedded JSON metadata support for comic ZIP/CBZ archives.
+
+- ZIP/CBZ scans now read small embedded metadata JSON files such as `metadata.json`, `info.json`, `comicinfo.json`, and `元数据.json`.
+- Metadata fields `name`, `author`, `description`, and `tags` map onto FolioSpace's existing book title, creator, description, and public tag fields without a database migration.
+- Search now matches public archive tags and creators, so tagged packs can be found through the web UI, Client API, and MCP-backed search flows.
+- Book API responses merge public archive tags with profile-private tags while keeping user private state separate.
+
 ## 0.965 Release: Client Catalog APIs
 
 Release `0.965` adds paginated catalog APIs for native iPad, iPhone, and Vision Pro clients.
@@ -48,7 +57,7 @@ Example API request after adding new files under a large manga folder:
 ## Quick Start
 
 ```bash
-docker pull funland/foliospace-library:0.965
+docker pull funland/foliospace-library:0.966
 ```
 
 ```bash
@@ -58,7 +67,7 @@ docker run -p 8080:8080 \
   -v /volume2/Books:/books:ro \
   -v /volume2/GameROMS:/games:ro \
   -e FOLIOSPACE_DIRECTORY_ROOTS=/library,/books,/games \
-  funland/foliospace-library:0.965
+  funland/foliospace-library:0.966
 ```
 
 Open `http://localhost:8080`. On a fresh `/config`, FolioSpace Library starts with a setup page for the first access key and first library path.
