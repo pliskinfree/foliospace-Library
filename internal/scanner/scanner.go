@@ -993,7 +993,7 @@ func isGamePackageExt(ext string) bool {
 
 func isGameExt(ext string) bool {
 	switch ext {
-	case ".nes", ".sfc", ".smc", ".gba", ".gb", ".gbc", ".nds", ".3ds", ".cia", ".chd", ".iso", ".bin", ".cue":
+	case ".nes", ".sfc", ".smc", ".gba", ".gb", ".gbc", ".nds", ".3ds", ".cia", ".chd", ".iso", ".bin", ".cue", ".img", ".pbp":
 		return true
 	default:
 		return false
@@ -1505,7 +1505,7 @@ func inferGamePlatform(ext string, relPath string) string {
 			return "32x"
 		case "ss", "saturn", "sega saturn":
 			return "saturn"
-		case "ps1", "psx", "playstation":
+		case "ps", "ps1", "psx", "playstation", "playstation 1", "playstation one", "psone":
 			return "ps1"
 		}
 	}
@@ -1524,8 +1524,10 @@ func inferGamePlatform(ext string, relPath string) string {
 		return "nds"
 	case ".3ds", ".cia":
 		return "3ds"
-	case ".chd", ".iso", ".bin", ".cue":
+	case ".chd", ".iso", ".bin", ".cue", ".img":
 		return "disc"
+	case ".pbp":
+		return "ps1"
 	case ".zip", ".7z":
 		return "arcade"
 	default:

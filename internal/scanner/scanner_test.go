@@ -1055,6 +1055,9 @@ func TestInferGamePlatformUsesFBNeoSystemDirectories(t *testing.T) {
 		{relPath: "FBNeo/arcade/wof.zip", want: "arcade"},
 		{relPath: "Model3ROMs/spikeout.zip", want: "model3"},
 		{relPath: "SEGA 32X/doom32x.zip", want: "32x"},
+		{relPath: "PS/Alundra.pbp", want: "ps1"},
+		{relPath: "PS/xenogears.PBP", want: "ps1"},
+		{relPath: "PS/01-动作游戏/人猿泰山.img", want: "ps1"},
 	}
 	for _, test := range tests {
 		if got := inferGamePlatform(filepath.Ext(test.relPath), test.relPath); got != test.want {
