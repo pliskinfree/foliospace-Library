@@ -79,6 +79,22 @@ func TestLibretroBoxartCandidatesUseFBNeoArcadePlaylist(t *testing.T) {
 	}
 }
 
+func TestLibretroBoxartCandidatesSupportMDPlatformAlias(t *testing.T) {
+	withLibretroListingFetcher(t, func(_ string, _ string) ([]string, error) {
+		return nil, errors.New("offline")
+	})
+	urls := libretroBoxartCandidates(domain.GameAsset{
+		Title:    "Shinobi III - Return of the Ninja Master",
+		Platform: "md",
+	})
+	if len(urls) != 4 {
+		t.Fatalf("urls len = %d, want 4", len(urls))
+	}
+	if !strings.Contains(urls[0], "Sega%20-%20Mega%20Drive%20-%20Genesis/Named_Boxarts/Shinobi%20III%20-%20Return%20of%20the%20Ninja%20Master.png") {
+		t.Fatalf("first url = %q, want Mega Drive playlist candidate", urls[0])
+	}
+}
+
 func TestLibretroArtworkCandidatesPreferListingExactMatch(t *testing.T) {
 	urls := libretroBoxartCandidatesFromListing(domain.GameAsset{
 		Title:    "Super Mario World",

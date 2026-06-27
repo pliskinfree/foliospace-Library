@@ -1673,7 +1673,7 @@ func libretroPlaylist(platform string) (string, bool) {
 		return "Nintendo - Game Boy Advance", true
 	case "nds", "ds":
 		return "Nintendo - Nintendo DS", true
-	case "genesis", "mega-drive", "megadrive":
+	case "md", "genesis", "mega-drive", "megadrive":
 		return "Sega - Mega Drive - Genesis", true
 	case "ps1", "psx", "playstation":
 		return "Sony - PlayStation", true
