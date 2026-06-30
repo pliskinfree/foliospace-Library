@@ -1697,8 +1697,11 @@ func readPDFMetadata(path string, fallback bookMetadata) (bookMetadata, error) {
 		return bookMetadata{}, err
 	}
 	metadata := fallback
-	info := pdfInfoDictionary(data)
+	info, hasInfoRef := pdfInfoDictionary(data)
 	if len(info) == 0 {
+		if hasInfoRef {
+			return metadata, nil
+		}
 		info = data
 	}
 	if title := pdfInfoText(info, "Title"); title != "" {
@@ -1742,19 +1745,19 @@ func readPDFMetadataWindow(path string) ([]byte, error) {
 	return out, nil
 }
 
-func pdfInfoDictionary(data []byte) []byte {
+func pdfInfoDictionary(data []byte) ([]byte, bool) {
 	pattern := regexp.MustCompile(`/Info\s+(\d+)\s+(\d+)\s+R`)
 	matches := pattern.FindAllSubmatch(data, -1)
 	if len(matches) == 0 {
-		return nil
+		return nil, false
 	}
 	match := matches[len(matches)-1]
 	objectPattern := regexp.MustCompile(`(^|[\x00\t\n\f\r ])` + regexp.QuoteMeta(string(match[1])) + `\s+` + regexp.QuoteMeta(string(match[2])) + `\s+obj\b`)
 	objectMatch := objectPattern.FindIndex(data)
 	if len(objectMatch) == 0 {
-		return nil
+		return nil, true
 	}
-	return extractPDFDictionary(data[objectMatch[1]:])
+	return extractPDFDictionary(data[objectMatch[1]:]), true
 }
 
 func extractPDFDictionary(data []byte) []byte {

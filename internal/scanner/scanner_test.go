@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -204,6 +205,32 @@ func TestScanLibraryUsesPDFMetadataForTitleCollectionAndBookDetails(t *testing.T
 	}
 	if len(books) != 1 || books[0].Title != "PDF Metadata Title" || books[0].Creator != "PDF Author" || books[0].Description != "PDF description." {
 		t.Fatalf("books = %#v, want PDF metadata details", books)
+	}
+}
+
+func TestPDFMetadataSkipsWindowFallbackWhenInfoObjectIsOutsideMetadataWindow(t *testing.T) {
+	root := t.TempDir()
+	pdfPath := filepath.Join(root, "fallback.pdf")
+	head := []byte("%PDF-1.4\n1 0 obj << /Type /Outlines /Title (Bookmark Title) >> endobj\n")
+	middlePad := bytes.Repeat([]byte("x"), 3<<20)
+	infoObject := []byte("5 0 obj << /Title (Real Title) /Author (Real Author) >> endobj\n")
+	tailPad := bytes.Repeat([]byte("y"), 3<<20)
+	tail := []byte("trailer << /Root 1 0 R /Info 5 0 R >>\n%%EOF\n")
+	data := append([]byte{}, head...)
+	data = append(data, middlePad...)
+	data = append(data, infoObject...)
+	data = append(data, tailPad...)
+	data = append(data, tail...)
+	if err := os.WriteFile(pdfPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, err := readPDFMetadata(pdfPath, bookMetadata{Title: "fallback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Title != "fallback" || metadata.Creator != "" {
+		t.Fatalf("metadata = %#v, want fallback metadata when Info object is outside read window", metadata)
 	}
 }
 
